@@ -14,5 +14,16 @@ export const GRAVITY_FAST = 60; // when holding ArrowDown
 
 // Classic line clear scoring
 export const SCORES = {
-    
+    1: 100,
+    2: 300,
+    3: 500,
+    4: 800, // "Tetris!"
+};
+
+// Gravity delay by level progression (lower levels are faster). Clamp to 100ms minimum.
+export function gravityForLevel(level) {
+  return Math.max(100, GRAVITY_SLOW - (level - 1) * 60);
 }
+
+// Lines needed to level up
+export const LINES_PER_LEVEL = 10;
