@@ -14,6 +14,9 @@ import {
 
 // Overlay the active piece onto a copy of the board to render.
 function cellsWithCurrentPiece(board, piece) {
+  // Add null check for piece
+  if (!piece) return board;
+  
   const view = board.map((row) => row.slice());
   const { shape, x, y, id } = piece;
 
@@ -31,6 +34,9 @@ function cellsWithCurrentPiece(board, piece) {
 }
 
 function collides(board, piece, dx, dy) {
+  // Add null check for piece
+  if (!piece) return false;
+  
   const { shape, x, y } = piece;
   for (let py = 0; py < shape.length; py++) {
     for (let px = 0; px < shape[py].length; px++) {
@@ -46,6 +52,9 @@ function collides(board, piece, dx, dy) {
 }
 
 function mergePiece(board, piece) {
+  // Add null check for piece
+  if (!piece) return board;
+  
   const next = cloneBoard(board);
   const { shape, x, y, id } = piece;
   for (let py = 0; py < shape.length; py++) {
@@ -68,7 +77,8 @@ export default function GameBoard() {
   const bagRef = useRef(null);
   if (!bagRef.current) bagRef.current = createBagRNG();
 
-  const [piece, setPiece] = useState(() => bagRef.current.next());
+  // Initialize piece state with null to avoid calling next() multiple times
+  const [piece, setPiece] = useState(null);
 
   const [dropFast, setDropFast] = useState(false);
   const [gameOver, setGameOver] = useState(false);
@@ -80,16 +90,20 @@ export default function GameBoard() {
 
   const rootRef = useRef(null);
 
+  // Initialize the first piece only once after component mounts
   useEffect(() => {
+    if (!piece) {
+      setPiece(bagRef.current.next());
+    }
     rootRef.current?.focus();
-  }, []);
+  }, [piece]);
 
   const currentDelay = dropFast ? GRAVITY_FAST : gravityForLevel(level);
 
   // Gravity tick: move down if possible, otherwise lock/clear/spawn.
   const tick = useCallback(() => {
     setPiece((prev) => {
-      if (collides(board, prev, 0, 1)) {
+      if (!prev || collides(board, prev, 0, 1)) {
         const locked = mergePiece(board, prev);
         const { board: clearedBoard, linesCleared } = clearLines
           ? clearLines(locked)
@@ -118,10 +132,10 @@ export default function GameBoard() {
   }, [board, level]);
 
   useEffect(() => {
-    if (gameOver || paused) return;
+    if (gameOver || paused || !piece) return;
     const id = setInterval(tick, currentDelay);
     return () => clearInterval(id);
-  }, [tick, currentDelay, gameOver, paused]);
+  }, [tick, currentDelay, gameOver, paused, piece]);
 
   const onKeyDown = (e) => {
     if (e.key.toLowerCase() === "p") {
@@ -135,7 +149,7 @@ export default function GameBoard() {
       return;
     }
 
-    if (paused || gameOver) return;
+    if (paused || gameOver || !piece) return;
 
     if (e.key === "ArrowLeft") {
       setPiece((p) => (collides(board, p, -1, 0) ? p : { ...p, x: p.x - 1 }));
@@ -157,7 +171,7 @@ export default function GameBoard() {
   const reset = () => {
     setBoard(createEmptyBoard());
     bagRef.current = createBagRNG();
-    setPiece(bagRef.current.next());
+    setPiece(null); // Set to null initially
     setDropFast(false);
     setGameOver(false);
     setPaused(false);
@@ -165,7 +179,13 @@ export default function GameBoard() {
     setLines(0);
     setLevel(0);
     rootRef.current?.focus();
+    // The useEffect will handle setting the first piece
   };
+
+  // Don't render anything if piece is null
+  if (!piece) {
+    return <div>Loading...</div>;
+  }
 
   const view = cellsWithCurrentPiece(board, piece);
 
