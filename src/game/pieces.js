@@ -62,13 +62,22 @@ export function createBagRNG() {
   let bag = [];
 
   function refill() {
-    bag = shuffle(["O", "I", "T", "S", "Z", "J", "L"]);
+    // Create a fresh array and shuffle it
+    const pieces = ["O", "I", "T", "S", "Z", "J", "L"];
+    bag = shuffle(pieces);
+    console.log("Refilled bag:", bag); // Debug line - remove later
   }
+
+  // Initialize the bag immediately
+  refill();
 
   return {
     next() {
-      if (bag.length === 0) refill();
+      if (bag.length === 0) {
+        refill();
+      }
       const type = bag.pop();
+      console.log(`Dispensed: ${type}, Remaining:`, bag); // Debug line
       return spawnPiece(type);
     },
   };
