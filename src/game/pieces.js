@@ -91,28 +91,15 @@ export function createBagRNG(options = {}) {
       : options.seed !== undefined
         ? createSeededRandom(options.seed)
         : Math.random;
-  const onEvent = typeof options.onEvent === "function" ? options.onEvent : null;
 
   let bag = [];
-  let activeBagOrder = [];
   let drawCount = 0;
   let refillCount = 0;
   let recentDraws = [];
 
-  function emitEvent(event) {
-    if (onEvent) onEvent(event);
-  }
-
   function refill() {
     bag = shuffle([...BAG_PIECES], random);
-    activeBagOrder = [...bag];
     refillCount += 1;
-    emitEvent({
-      type: "refill",
-      bagNumber: refillCount,
-      refillCount,
-      bag: [...bag],
-    });
   }
 
   // Initialize the bag immediately
@@ -121,19 +108,6 @@ export function createBagRNG(options = {}) {
   function recordDraw(type) {
     drawCount += 1;
     recentDraws = [...recentDraws, type].slice(-14);
-    const bagSlot = BAG_PIECES.length - bag.length;
-    emitEvent({
-      type: "draw",
-      drawCount,
-      bagNumber: refillCount,
-      bagSlot,
-      refillCount,
-      drawn: type,
-      remaining: [...bag],
-      bagOrder: [...activeBagOrder],
-      bagConsumed: activeBagOrder.slice(0, bagSlot),
-      recentDraws: [...recentDraws],
-    });
   }
 
   return {
@@ -146,13 +120,8 @@ export function createBagRNG(options = {}) {
       return spawnPiece(type);
     },
     snapshot() {
-      const bagSlot = BAG_PIECES.length - bag.length;
       return {
         remaining: [...bag],
-        bagNumber: refillCount,
-        bagSlot,
-        bagOrder: [...activeBagOrder],
-        bagConsumed: activeBagOrder.slice(0, bagSlot),
         drawCount,
         refillCount,
         recentDraws: [...recentDraws],

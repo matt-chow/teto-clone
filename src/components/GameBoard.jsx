@@ -6,32 +6,11 @@ import {
   ROWS,
   CELL_SIZE,
   COLORS,
-  PIECE_IDS,
   GRAVITY_FAST,
   SCORES,
   gravityForLevel,
   LINES_PER_LEVEL,
 } from "../game/constants";
-
-const PIECE_TYPES = ["O", "I", "T", "S", "Z", "J", "L"];
-const ID_TO_TYPE = Object.fromEntries(
-  Object.entries(PIECE_IDS).map(([type, id]) => [id, type]),
-);
-
-function countLockedCellsByType(board) {
-  const cells = Object.fromEntries(PIECE_TYPES.map((type) => [type, 0]));
-
-  for (let y = 0; y < board.length; y++) {
-    for (let x = 0; x < board[y].length; x++) {
-      const cell = board[y][x];
-      if (!cell) continue;
-      const type = ID_TO_TYPE[cell];
-      if (type) cells[type] += 1;
-    }
-  }
-
-  return cells;
-}
 
 // Overlay the active piece onto a copy of the board to render.
 function cellsWithCurrentPiece(board, piece) {
@@ -82,69 +61,12 @@ function mergePiece(board, piece) {
   return next;
 }
 
-function readDebugConfig() {
-  if (typeof window === "undefined") {
-    return { enabled: false, seed: undefined };
-  }
-
-  const params = new URLSearchParams(window.location.search);
-  return {
-    enabled: params.has("debugBag"),
-    seed: params.get("bagSeed") ?? undefined,
-  };
-}
-
 export default function GameBoard() {
   const [board, setBoard] = useState(() => createEmptyBoard());
-  const debugConfig = useRef(readDebugConfig()).current;
-  const [bagLog, setBagLog] = useState([]);
-  const [lockedHistory, setLockedHistory] = useState([]);
-  const [lockedCountTotal, setLockedCountTotal] = useState(0);
-  const debugReadyRef = useRef(false);
   const initDoneRef = useRef(false);
-
-  const bagEventLogger = useCallback((event) => {
-    if (!debugReadyRef.current) {
-      return;
-    }
-
-    if (event.type === "refill") {
-      setBagLog((current) => [
-        ...current,
-        {
-          kind: "refill",
-          text: `refill #${event.bagNumber}`,
-          detail: `order: ${event.bag.join(" ")}`,
-        },
-      ].slice(-12));
-      return;
-    }
-
-    const recentSeven = event.recentDraws.slice(-7);
-    const uniqueRecentSeven = new Set(recentSeven).size;
-
-    setBagLog((current) => [
-      ...current,
-      {
-        kind: "draw",
-        text: `draw #${event.drawCount}: bag ${event.bagNumber} slot ${event.bagSlot}/7 -> ${event.drawn}`,
-        detail: `remaining: ${event.remaining.join(" ") || "(empty)"} | last7 unique: ${uniqueRecentSeven}/7`,
-      },
-    ].slice(-12));
-  }, []);
 
   const bagRef = useRef(null);
   const [piece, setPiece] = useState(null);
-  const [bagSnapshot, setBagSnapshot] = useState(() => ({
-    remaining: [],
-    bagNumber: 0,
-    bagSlot: 0,
-    bagOrder: [],
-    bagConsumed: [],
-    drawCount: 0,
-    refillCount: 0,
-    recentDraws: [],
-  }));
 
   const [dropFast, setDropFast] = useState(false);
   const [gameOver, setGameOver] = useState(false);
@@ -172,14 +94,10 @@ export default function GameBoard() {
   }, [level]);
 
   const startNewGame = useCallback(() => {
-    const rng = createBagRNG({
-      seed: debugConfig.seed,
-      onEvent: bagEventLogger,
-    });
+    const rng = createBagRNG();
     bagRef.current = rng;
 
     const firstPiece = rng.next();
-    const firstSnapshot = rng.snapshot();
     const emptyBoard = createEmptyBoard();
 
     boardRef.current = emptyBoard;
@@ -188,46 +106,28 @@ export default function GameBoard() {
 
     setBoard(emptyBoard);
     setPiece(firstPiece);
-    setBagSnapshot(firstSnapshot);
-    setBagLog([
-      {
-        kind: "status",
-        text: "initial bag state",
-        detail: `draws: ${firstSnapshot.drawCount}, bag ${firstSnapshot.bagNumber} slot ${firstSnapshot.bagSlot}/7, active: ${firstPiece.type}`,
-      },
-    ]);
-    setLockedHistory([]);
-    setLockedCountTotal(0);
     setDropFast(false);
     setGameOver(false);
     setPaused(false);
     setScore(0);
     setLines(0);
     setLevel(0);
-  }, [bagEventLogger, debugConfig.seed]);
+  }, []);
 
   useEffect(() => {
     rootRef.current?.focus();
   }, []);
 
   useEffect(() => {
-    debugReadyRef.current = true;
     if (initDoneRef.current) return;
     initDoneRef.current = true;
     startNewGame();
   }, [startNewGame]);
 
-  const syncBagSnapshot = useCallback(() => {
-    if (!bagRef.current) return;
-    setBagSnapshot(bagRef.current.snapshot());
-  }, []);
-
   const drawNextPiece = useCallback(() => {
     if (!bagRef.current) return null;
-    const next = bagRef.current.next();
-    syncBagSnapshot();
-    return next;
-  }, [syncBagSnapshot]);
+    return bagRef.current.next();
+  }, []);
 
   const currentDelay = dropFast ? GRAVITY_FAST : gravityForLevel(level);
 
@@ -238,9 +138,6 @@ export default function GameBoard() {
     if (!currentPiece) return;
 
     if (collides(currentBoard, currentPiece, 0, 1)) {
-      setLockedHistory((current) => [...current, currentPiece.type].slice(-14));
-      setLockedCountTotal((count) => count + 1);
-
       const locked = mergePiece(currentBoard, currentPiece);
       const { board: clearedBoard, linesCleared } = clearLines
         ? clearLines(locked)
@@ -332,214 +229,109 @@ export default function GameBoard() {
   };
 
   const view = piece ? cellsWithCurrentPiece(board, piece) : board;
-  const lockedCells = countLockedCellsByType(board);
-  const lockedApproxPieces = Object.fromEntries(
-    PIECE_TYPES.map((type) => [type, Math.floor(lockedCells[type] / 4)]),
-  );
-  const recentSeven = bagSnapshot.recentDraws.slice(-7);
-  const recentSevenUnique = new Set(recentSeven).size;
-  const bagOrderWithCursor = (bagSnapshot.bagOrder || []).map((type, index) =>
-    index < (bagSnapshot.bagSlot || 0) ? `[${type}]` : type,
-  );
-  const nextPieces = bagSnapshot.remaining.slice(0, 5);
 
   return (
     <div
       style={{
-        display: "flex",
-        alignItems: "flex-start",
-        gap: 16,
-        flexWrap: "wrap",
-        justifyContent: "center",
+        outline: "2px solid #2f2f36",
+        padding: 12,
+        display: "inline-block",
+        background: "#0d0d12",
+        borderRadius: 10,
+        userSelect: "none",
       }}
+      ref={rootRef}
+      tabIndex={0}
+      onKeyDown={onKeyDown}
+      onKeyUp={onKeyUp}
+      aria-label="Tetris game board"
+      role="application"
     >
       <div
-        ref={rootRef}
-        tabIndex={0}
-        onKeyDown={onKeyDown}
-        onKeyUp={onKeyUp}
         style={{
-          outline: "2px solid #2f2f36",
-          padding: 12,
-          display: "inline-block",
-          background: "#0d0d12",
-          borderRadius: 10,
-          userSelect: "none",
-        }}
-        aria-label="Tetris game board"
-        role="application"
-      >
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            marginBottom: 8,
-            color: "#cfcfe1",
-            fontFamily:
-              "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
-            fontSize: 14,
-          }}
-        >
-          <div>Score: {score}</div>
-          <div>Lines: {lines}</div>
-          <div>Level: {level}</div>
-        </div>
-
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: `repeat(${COLS}, ${CELL_SIZE}px)`,
-            gridTemplateRows: `repeat(${ROWS}, ${CELL_SIZE}px)`,
-            gap: 1,
-            background: "#22232b",
-            border: "1px solid #2f2f36",
-            position: "relative",
-          }}
-          onClick={() => rootRef.current?.focus()}
-          title="Click to focus, then use Arrow keys (P to pause, R to reset)"
-        >
-          {view.map((row, y) =>
-            row.map((cell, x) => {
-              const filled = cell !== 0;
-              return (
-                <div
-                  key={`${y}-${x}`}
-                  style={{
-                    width: CELL_SIZE,
-                    height: CELL_SIZE,
-                    background: filled ? COLORS[cell] : COLORS[0],
-                    borderRadius: 3,
-                    boxShadow: filled ? "inset 0 0 3px rgba(0,0,0,0.5)" : "none",
-                  }}
-                />
-              );
-            }),
-          )}
-
-          {(paused || gameOver) && (
-            <div
-              style={{
-                position: "absolute",
-                inset: 0,
-                background: "rgba(0,0,0,0.45)",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                color: "#fff",
-                fontWeight: 700,
-                fontSize: 22,
-                letterSpacing: 1,
-              }}
-            >
-              {gameOver ? "GAME OVER" : "PAUSED"}
-            </div>
-          )}
-        </div>
-
-        <div style={{ marginTop: 10, color: "#aaa", fontSize: 14 }}>
-          P = Pause/Resume · R = Reset · Arrow Left/Right/Down to move
-        </div>
-
-        <button
-          onClick={reset}
-          style={{
-            marginTop: 8,
-            padding: "6px 12px",
-            background: "#20232a",
-            color: "#fff",
-            border: "1px solid #2f2f36",
-            borderRadius: 6,
-            cursor: "pointer",
-          }}
-        >
-          Reset
-        </button>
-      </div>
-
-      <aside
-        aria-label="7-bag debug console"
-        style={{
-          minWidth: 300,
-          maxWidth: 380,
-          flex: "1 1 320px",
-          padding: 12,
-          borderRadius: 10,
-          border: "1px solid #3a3b45",
-          background: "#11131a",
-          color: "#d7d8ea",
+          display: "flex",
+          justifyContent: "space-between",
+          marginBottom: 8,
+          color: "#cfcfe1",
           fontFamily:
             "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
-          fontSize: 12,
-          lineHeight: 1.5,
-          boxShadow: "0 10px 24px rgba(0, 0, 0, 0.25)",
+          fontSize: 14,
         }}
       >
-        <div style={{ fontWeight: 700, marginBottom: 8 }}>7-bag Console</div>
-        <div>Mode: {debugConfig.enabled ? "debug" : "live"}</div>
-        <div>Seed: {debugConfig.seed ?? "random"}</div>
-        <div>Active piece: {piece?.type ?? "(none)"}</div>
-        <div>Next pieces: {nextPieces.join(" ") || "(refill on next draw)"}</div>
-        <div>Draws: {bagSnapshot.drawCount}</div>
-        <div>Locked pieces: {lockedCountTotal}</div>
-        <div>Draw - lock delta: {bagSnapshot.drawCount - lockedCountTotal}</div>
-        <div>Refills: {bagSnapshot.refillCount}</div>
-        <div>Current bag: #{bagSnapshot.bagNumber}</div>
-        <div>Current bag slot: {bagSnapshot.bagSlot}/7</div>
-        <div style={{ marginTop: 8 }}>Bag order (drawn items are bracketed):</div>
-        <div style={{ color: "#a9ddff", wordBreak: "break-word" }}>
-          {bagOrderWithCursor.join(" ") || "(unknown)"}
-        </div>
-        <div style={{ marginTop: 8 }}>Remaining queue:</div>
-        <div style={{ color: "#9be28f", wordBreak: "break-word" }}>
-          {bagSnapshot.remaining.join(" ") || "(empty)"}
-        </div>
-        <div style={{ marginTop: 8 }}>Recent draws:</div>
-        <div style={{ color: "#f7c873", wordBreak: "break-word" }}>
-          {bagSnapshot.recentDraws.join(" ") || "(none)"}
-        </div>
-        <div>
-          Last 7 unique: {recentSevenUnique}/7
-          {recentSevenUnique < 7 ? " (can be normal at bag boundaries)" : ""}
-        </div>
-        <div style={{ marginTop: 8 }}>Locked piece history:</div>
-        <div style={{ color: "#f5b5ff", wordBreak: "break-word" }}>
-          {lockedHistory.join(" ") || "(none locked yet)"}
-        </div>
-        <div style={{ marginTop: 8 }}>Locked board cells by type:</div>
-        <div style={{ color: "#9dc3ff", wordBreak: "break-word" }}>
-          {PIECE_TYPES.map((type) => `${type}:${lockedCells[type]}`).join("  ")}
-        </div>
-        <div style={{ marginTop: 4 }}>Approx locked pieces by type:</div>
-        <div style={{ color: "#9dc3ff", wordBreak: "break-word" }}>
-          {PIECE_TYPES.map((type) => `${type}:${lockedApproxPieces[type]}`).join("  ")}
-        </div>
+        <div>Score: {score}</div>
+        <div>Lines: {lines}</div>
+        <div>Level: {level}</div>
+      </div>
 
-        <div style={{ marginTop: 12, borderTop: "1px solid #2b2d36", paddingTop: 10 }}>
-          <div style={{ marginBottom: 6, color: "#aeb2c8" }}>Event log</div>
-          <div style={{ display: "grid", gap: 6, maxHeight: 360, overflowY: "auto" }}>
-            {bagLog.length === 0 ? (
-              <div style={{ color: "#7f849c" }}>(waiting for draws)</div>
-            ) : (
-              bagLog.map((entry, index) => (
-                <div
-                  key={`${entry.kind}-${index}`}
-                  style={{
-                    padding: 8,
-                    borderRadius: 8,
-                    background: entry.kind === "refill" ? "#161a24" : "#141822",
-                    border: "1px solid #262b38",
-                  }}
-                >
-                  <div style={{ color: entry.kind === "refill" ? "#8bd5ff" : entry.kind === "status" ? "#c2c9ff" : "#c7f0a1" }}>
-                    {entry.text}
-                  </div>
-                  <div style={{ color: "#99a0bf", marginTop: 2 }}>{entry.detail}</div>
-                </div>
-              ))
-            )}
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: `repeat(${COLS}, ${CELL_SIZE}px)`,
+          gridTemplateRows: `repeat(${ROWS}, ${CELL_SIZE}px)`,
+          gap: 1,
+          background: "#22232b",
+          border: "1px solid #2f2f36",
+          position: "relative",
+        }}
+        onClick={() => rootRef.current?.focus()}
+        title="Click to focus, then use Arrow keys (P to pause, R to reset)"
+      >
+        {view.map((row, y) =>
+          row.map((cell, x) => {
+            const filled = cell !== 0;
+            return (
+              <div
+                key={`${y}-${x}`}
+                style={{
+                  width: CELL_SIZE,
+                  height: CELL_SIZE,
+                  background: filled ? COLORS[cell] : COLORS[0],
+                  borderRadius: 3,
+                  boxShadow: filled ? "inset 0 0 3px rgba(0,0,0,0.5)" : "none",
+                }}
+              />
+            );
+          }),
+        )}
+
+        {(paused || gameOver) && (
+          <div
+            style={{
+              position: "absolute",
+              inset: 0,
+              background: "rgba(0,0,0,0.45)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              color: "#fff",
+              fontWeight: 700,
+              fontSize: 22,
+              letterSpacing: 1,
+            }}
+          >
+            {gameOver ? "GAME OVER" : "PAUSED"}
           </div>
-        </div>
-      </aside>
+        )}
+      </div>
+
+      <div style={{ marginTop: 10, color: "#aaa", fontSize: 14 }}>
+        P = Pause/Resume · R = Reset · Arrow Left/Right/Down to move
+      </div>
+
+      <button
+        onClick={reset}
+        style={{
+          marginTop: 8,
+          padding: "6px 12px",
+          background: "#20232a",
+          color: "#fff",
+          border: "1px solid #2f2f36",
+          borderRadius: 6,
+          cursor: "pointer",
+        }}
+      >
+        Reset
+      </button>
     </div>
   );
 }
