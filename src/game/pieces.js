@@ -48,6 +48,11 @@ function spawnPiece(type) {
   };
 }
 
+export function createPieceByType(type) {
+  if (!SHAPES[type]) return null;
+  return spawnPiece(type);
+}
+
 // Fisher–Yates shuffle
 function shuffle(arr, random = Math.random) {
   for (let i = arr.length - 1; i > 0; i--) {
