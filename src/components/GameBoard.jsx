@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { createEmptyBoard, cloneBoard, clearLines } from "../game/board";
 import { createBagRNG, createPieceByType } from "../game/pieces";
+import { formatCells, tryRotatePieceSRS } from "../game/rotation";
 import {
   COLS,
   ROWS,
@@ -61,70 +62,11 @@ function mergePiece(board, piece) {
   return next;
 }
 
-function rotateShapeCW(shape) {
-  const h = shape.length;
-  const w = shape[0].length;
-  const rotated = Array.from({ length: w }, () => Array(h).fill(0));
-
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      rotated[x][h - 1 - y] = shape[y][x];
-    }
-  }
-
-  return rotated;
-}
-
-function rotateShapeCCW(shape) {
-  const h = shape.length;
-  const w = shape[0].length;
-  const rotated = Array.from({ length: w }, () => Array(h).fill(0));
-
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      rotated[w - 1 - x][y] = shape[y][x];
-    }
-  }
-
-  return rotated;
-}
-
-const SIMPLE_KICKS = [
-  [0, 0],
-  [-1, 0],
-  [1, 0],
-  [-2, 0],
-  [2, 0],
-  [0, -1],
-];
-
 // TETR.IO default lock delay is 30 frames at 60 Hz (~500 ms).
 const LOCK_DELAY_MS = 500;
 const NEXT_PREVIEW_COUNT = 5;
 const PREVIEW_BOX = 4;
 const PREVIEW_CELL = 12;
-
-function tryRotatePiece(board, piece, direction) {
-  let rotatedShape;
-
-  if (direction === "cw") {
-    rotatedShape = rotateShapeCW(piece.shape);
-  } else if (direction === "ccw") {
-    rotatedShape = rotateShapeCCW(piece.shape);
-  } else {
-    rotatedShape = rotateShapeCW(rotateShapeCW(piece.shape));
-  }
-
-  const rotated = { ...piece, shape: rotatedShape };
-
-  for (const [dx, dy] of SIMPLE_KICKS) {
-    if (!collides(board, rotated, dx, dy)) {
-      return { ...rotated, x: rotated.x + dx, y: rotated.y + dy };
-    }
-  }
-
-  return piece;
-}
 
 function renderMiniPiece(type) {
   if (!type) {
@@ -195,6 +137,10 @@ function renderMiniPiece(type) {
 export default function GameBoard() {
   const [board, setBoard] = useState(() => createEmptyBoard());
   const initDoneRef = useRef(false);
+  const debugRotation = useRef(
+    typeof window !== "undefined" &&
+      new URLSearchParams(window.location.search).has("debugRotation"),
+  ).current;
 
   const bagRef = useRef(null);
   const [piece, setPiece] = useState(null);
@@ -388,7 +334,37 @@ export default function GameBoard() {
     const currentBoard = boardRef.current;
     if (!currentPiece) return;
 
-    const rotated = tryRotatePiece(currentBoard, currentPiece, direction);
+    const rotated = tryRotatePieceSRS(currentBoard, currentPiece, direction, {
+      debug: debugRotation,
+      onDebug: (info) => {
+        if (!debugRotation || typeof console === "undefined") return;
+
+        console.groupCollapsed(
+          `[rotation] ${info.pieceType} ${direction.toUpperCase()} ${info.fromRotation}->${info.toRotation} @ (${info.fromX},${info.fromY})`,
+        );
+        console.log("origin cells:", formatCells(info.originCells));
+        console.log("raw rotated offsets:", formatCells(info.rawRotatedOffsets));
+
+        info.attempts.forEach((attempt, idx) => {
+          const status = attempt.blocked ? "fail" : "pass";
+          const reason = attempt.reason
+            ? JSON.stringify(attempt.reason)
+            : "none";
+          console.log(
+            `[kick ${idx + 1}] dx=${attempt.dx}, dy=${attempt.dy} -> ${status}; reason=${reason}; cells=${formatCells(attempt.cells)}`,
+          );
+        });
+
+        if (info.acceptedKick) {
+          console.log(
+            `accepted kick: dx=${info.acceptedKick.dx}, dy=${info.acceptedKick.dy}; cells=${formatCells(info.acceptedCells || [])}`,
+          );
+        } else {
+          console.log("rotation failed: no legal kick found");
+        }
+        console.groupEnd();
+      },
+    });
     if (rotated === currentPiece) return;
 
     if (collides(currentBoard, rotated, 0, 1)) {
@@ -400,7 +376,7 @@ export default function GameBoard() {
 
     pieceRef.current = rotated;
     setPiece(rotated);
-  }, [clearLockTimer, scheduleLockTimer]);
+  }, [clearLockTimer, debugRotation, scheduleLockTimer]);
 
   const hardDropActivePiece = useCallback(() => {
     const currentPiece = pieceRef.current;

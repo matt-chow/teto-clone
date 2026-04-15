@@ -43,6 +43,7 @@ function spawnPiece(type) {
     type,
     id: PIECE_IDS[type], // numeric id stored on the board
     shape,
+    rot: 0, // spawn orientation index used by SRS kicks (0, R, 2, L)
     x: spawnX(shape),
     y: 0, // spawn at top; some blocks will appear partly above (handled in collision)
   };
