@@ -24,4 +24,20 @@ describe("7-bag generator", () => {
     const max = Math.max(...vals);
     expect(max - min).toBeLessThanOrEqual(1);
   });
+
+  it("is reproducible with a seed and exposes queue snapshots", () => {
+    const seededA = createBagRNG({ seed: "debug-seed" });
+    const seededB = createBagRNG({ seed: "debug-seed" });
+
+    const sequenceA = Array.from({ length: 10 }, () => seededA.next().type);
+    const sequenceB = Array.from({ length: 10 }, () => seededB.next().type);
+
+    expect(sequenceA).toEqual(sequenceB);
+
+    const snapshot = seededA.snapshot();
+    expect(snapshot.drawCount).toBe(10);
+    expect(snapshot.refillCount).toBeGreaterThanOrEqual(1);
+    expect(snapshot.remaining.length).toBeLessThanOrEqual(7);
+    expect(snapshot.recentDraws.slice(-10)).toEqual(sequenceA);
+  });
 });
