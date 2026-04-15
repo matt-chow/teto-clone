@@ -61,6 +61,65 @@ function mergePiece(board, piece) {
   return next;
 }
 
+function rotateShapeCW(shape) {
+  const h = shape.length;
+  const w = shape[0].length;
+  const rotated = Array.from({ length: w }, () => Array(h).fill(0));
+
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      rotated[x][h - 1 - y] = shape[y][x];
+    }
+  }
+
+  return rotated;
+}
+
+function rotateShapeCCW(shape) {
+  const h = shape.length;
+  const w = shape[0].length;
+  const rotated = Array.from({ length: w }, () => Array(h).fill(0));
+
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      rotated[w - 1 - x][y] = shape[y][x];
+    }
+  }
+
+  return rotated;
+}
+
+const SIMPLE_KICKS = [
+  [0, 0],
+  [-1, 0],
+  [1, 0],
+  [-2, 0],
+  [2, 0],
+  [0, -1],
+];
+
+function tryRotatePiece(board, piece, direction) {
+  let rotatedShape;
+
+  if (direction === "cw") {
+    rotatedShape = rotateShapeCW(piece.shape);
+  } else if (direction === "ccw") {
+    rotatedShape = rotateShapeCCW(piece.shape);
+  } else {
+    rotatedShape = rotateShapeCW(rotateShapeCW(piece.shape));
+  }
+
+  const rotated = { ...piece, shape: rotatedShape };
+
+  for (const [dx, dy] of SIMPLE_KICKS) {
+    if (!collides(board, rotated, dx, dy)) {
+      return { ...rotated, x: rotated.x + dx, y: rotated.y + dy };
+    }
+  }
+
+  return piece;
+}
+
 export default function GameBoard() {
   const [board, setBoard] = useState(() => createEmptyBoard());
   const initDoneRef = useRef(false);
@@ -131,6 +190,33 @@ export default function GameBoard() {
 
   const currentDelay = dropFast ? GRAVITY_FAST : gravityForLevel(level);
 
+  const moveActivePiece = useCallback((dx, dy) => {
+    const currentPiece = pieceRef.current;
+    const currentBoard = boardRef.current;
+    if (!currentPiece) return;
+    if (collides(currentBoard, currentPiece, dx, dy)) return;
+
+    const moved = {
+      ...currentPiece,
+      x: currentPiece.x + dx,
+      y: currentPiece.y + dy,
+    };
+    pieceRef.current = moved;
+    setPiece(moved);
+  }, []);
+
+  const rotateActivePiece = useCallback((direction) => {
+    const currentPiece = pieceRef.current;
+    const currentBoard = boardRef.current;
+    if (!currentPiece) return;
+
+    const rotated = tryRotatePiece(currentBoard, currentPiece, direction);
+    if (rotated === currentPiece) return;
+
+    pieceRef.current = rotated;
+    setPiece(rotated);
+  }, []);
+
   // Gravity tick: move down if possible, otherwise lock/clear/spawn.
   const tick = useCallback(() => {
     const currentPiece = pieceRef.current;
@@ -184,12 +270,14 @@ export default function GameBoard() {
   }, [tick, currentDelay, gameOver, paused]);
 
   const onKeyDown = (e) => {
-    if (e.key.toLowerCase() === "p") {
+    const key = e.key.toLowerCase();
+
+    if (key === "p") {
       setPaused((p) => !p);
       e.preventDefault();
       return;
     }
-    if (e.key.toLowerCase() === "r") {
+    if (key === "r") {
       reset();
       e.preventDefault();
       return;
@@ -198,23 +286,23 @@ export default function GameBoard() {
     if (paused || gameOver) return;
 
     if (e.key === "ArrowLeft") {
-      setPiece((p) => {
-        if (!p) return p;
-        return collides(board, p, -1, 0) ? p : { ...p, x: p.x - 1 };
-      });
+      moveActivePiece(-1, 0);
       e.preventDefault();
     } else if (e.key === "ArrowRight") {
-      setPiece((p) => {
-        if (!p) return p;
-        return collides(board, p, +1, 0) ? p : { ...p, x: p.x + 1 };
-      });
+      moveActivePiece(1, 0);
       e.preventDefault();
     } else if (e.key === "ArrowDown") {
       setDropFast(true);
-      setPiece((p) => {
-        if (!p) return p;
-        return collides(board, p, 0, +1) ? p : { ...p, y: p.y + 1 };
-      });
+      moveActivePiece(0, 1);
+      e.preventDefault();
+    } else if (e.key === "ArrowUp" || key === "x") {
+      rotateActivePiece("cw");
+      e.preventDefault();
+    } else if (key === "z") {
+      rotateActivePiece("ccw");
+      e.preventDefault();
+    } else if (key === "a") {
+      rotateActivePiece("180");
       e.preventDefault();
     }
   };
@@ -274,7 +362,7 @@ export default function GameBoard() {
           position: "relative",
         }}
         onClick={() => rootRef.current?.focus()}
-        title="Click to focus, then use Arrow keys (P to pause, R to reset)"
+        title="Click to focus, then use Arrow keys (Up/X rotate CW, Z rotate CCW, A rotate 180, P pause, R reset)"
       >
         {view.map((row, y) =>
           row.map((cell, x) => {
@@ -315,7 +403,7 @@ export default function GameBoard() {
       </div>
 
       <div style={{ marginTop: 10, color: "#aaa", fontSize: 14 }}>
-        P = Pause/Resume · R = Reset · Arrow Left/Right/Down to move
+        P = Pause/Resume · R = Reset · Arrows move · Up/X = CW · Z = CCW · A = 180
       </div>
 
       <button
