@@ -113,6 +113,73 @@ const NEXT_PREVIEW_COUNT = 5;
 const PREVIEW_BOX = 4;
 const PREVIEW_CELL = 12;
 
+const INPUT_TIMING = {
+  DAS_MS: 150,
+  ARR_MS: 40,
+};
+
+const CONTROL_KEY_CODES = {
+  left: ["ArrowLeft"],
+  right: ["ArrowRight"],
+  softDrop: ["ArrowDown"],
+  rotateCW: ["ArrowUp", "KeyX"],
+  rotateCCW: ["KeyZ"],
+  rotate180: ["KeyA"],
+  hardDrop: ["Space"],
+  hold: ["KeyC"],
+  pause: ["KeyP"],
+  reset: ["KeyR"],
+};
+
+const CODE_TO_CONTROLS = Object.entries(CONTROL_KEY_CODES).reduce(
+  (map, [control, codes]) => {
+    codes.forEach((code) => {
+      if (!map[code]) map[code] = [];
+      map[code].push(control);
+    });
+    return map;
+  },
+  {},
+);
+
+const REPEATABLE_CONTROLS = ["left", "right"];
+
+const ONE_SHOT_CONTROLS = ["hardDrop", "hold", "pause", "reset"];
+
+const REPEATABLE_CONTROL_SET = new Set(REPEATABLE_CONTROLS);
+const ONE_SHOT_CONTROL_SET = new Set(ONE_SHOT_CONTROLS);
+
+function createInitialKeyState() {
+  return {
+    left: false,
+    right: false,
+    softDrop: false,
+    rotateCW: false,
+    rotateCCW: false,
+    rotate180: false,
+    hardDrop: false,
+    hold: false,
+    pause: false,
+    reset: false,
+  };
+}
+
+function createInitialRepeatTiming() {
+  return {
+    left: { pendingInitial: false, nextRepeatAt: 0, pressedAt: 0 },
+    right: { pendingInitial: false, nextRepeatAt: 0, pressedAt: 0 },
+  };
+}
+
+function createInitialQueuedActions() {
+  return {
+    hardDrop: false,
+    hold: false,
+    pause: false,
+    reset: false,
+  };
+}
+
 function renderMiniPiece(type) {
   if (!type) {
     return (
@@ -207,6 +274,12 @@ export default function GameBoard() {
   const lockTimerRef = useRef(null);
   const previewQueueRef = useRef([]);
   const holdUsedRef = useRef(false);
+  const pressedKeysRef = useRef(new Set());
+  const keyStateRef = useRef(createInitialKeyState());
+  const prevKeyStateRef = useRef(createInitialKeyState());
+  const repeatTimingRef = useRef(createInitialRepeatTiming());
+  const queuedActionsRef = useRef(createInitialQueuedActions());
+  const softDropAppliedRef = useRef(false);
 
   useEffect(() => {
     boardRef.current = board;
@@ -277,6 +350,90 @@ export default function GameBoard() {
     setLines(0);
     setLevel(0);
   }, [clearLockTimer, fillPreviewQueue, syncNextQueueState]);
+
+  const clearInputState = useCallback(() => {
+    pressedKeysRef.current.clear();
+    keyStateRef.current = createInitialKeyState();
+    prevKeyStateRef.current = createInitialKeyState();
+    repeatTimingRef.current = createInitialRepeatTiming();
+    queuedActionsRef.current = createInitialQueuedActions();
+    if (softDropAppliedRef.current) {
+      softDropAppliedRef.current = false;
+      setDropFast(false);
+    }
+  }, []);
+
+  const setControlPressed = useCallback((control, isPressed, timestamp) => {
+    const currentState = keyStateRef.current[control];
+    if (currentState === isPressed) return;
+
+    keyStateRef.current[control] = isPressed;
+
+    if (REPEATABLE_CONTROL_SET.has(control)) {
+      const timing = repeatTimingRef.current[control];
+      if (isPressed) {
+        timing.pendingInitial = true;
+        timing.nextRepeatAt = timestamp;
+        timing.pressedAt = timestamp;
+      } else {
+        timing.pendingInitial = false;
+        timing.nextRepeatAt = 0;
+        timing.pressedAt = 0;
+      }
+    }
+
+    if (isPressed && ONE_SHOT_CONTROL_SET.has(control)) {
+      queuedActionsRef.current[control] = true;
+    }
+  }, []);
+
+  const syncControlForCode = useCallback((code, isPressed, timestamp) => {
+    const controls = CODE_TO_CONTROLS[code];
+    if (!controls) return;
+
+    if (isPressed) {
+      pressedKeysRef.current.add(code);
+    } else {
+      pressedKeysRef.current.delete(code);
+    }
+
+    controls.forEach((control) => {
+      const pressed = CONTROL_KEY_CODES[control].some((boundCode) =>
+        pressedKeysRef.current.has(boundCode),
+      );
+      setControlPressed(control, pressed, timestamp);
+    });
+  }, [setControlPressed]);
+
+  const pollRepeatControl = useCallback((
+    control,
+    now,
+    initialDelay,
+    repeatInterval,
+    allowFire = true,
+  ) => {
+    if (!keyStateRef.current[control]) return false;
+
+    const timing = repeatTimingRef.current[control];
+    if (timing.pendingInitial && now >= timing.nextRepeatAt) {
+      timing.pendingInitial = false;
+      timing.nextRepeatAt = now + initialDelay;
+      return allowFire;
+    }
+
+    if (now >= timing.nextRepeatAt) {
+      timing.nextRepeatAt = now + repeatInterval;
+      return allowFire;
+    }
+
+    return false;
+  }, []);
+
+  const reset = useCallback(() => {
+    clearInputState();
+    startNewGame();
+    rootRef.current?.focus();
+  }, [clearInputState, startNewGame]);
 
   useEffect(() => {
     rootRef.current?.focus();
@@ -509,58 +666,156 @@ export default function GameBoard() {
     };
   }, [clearLockTimer]);
 
-  const onKeyDown = (e) => {
-    const key = e.key.toLowerCase();
+  const processInputFrame = useCallback((now) => {
+    const currentKeyState = keyStateRef.current;
+    const prevKeyState = prevKeyStateRef.current;
+    const commitKeyFrame = () => {
+      prevKeyStateRef.current = { ...currentKeyState };
+    };
 
-    if (key === "p") {
-      setPaused((p) => !p);
-      e.preventDefault();
+    const queued = queuedActionsRef.current;
+
+    if (queued.pause) {
+      queued.pause = false;
+      setPaused((prev) => !prev);
+      commitKeyFrame();
       return;
     }
-    if (key === "r") {
+
+    if (queued.reset) {
+      queued.reset = false;
       reset();
-      e.preventDefault();
+      commitKeyFrame();
       return;
     }
 
-    if (paused || gameOver) return;
-
-    if (e.key === "ArrowLeft") {
-      moveActivePiece(-1, 0);
-      e.preventDefault();
-    } else if (e.key === "ArrowRight") {
-      moveActivePiece(1, 0);
-      e.preventDefault();
-    } else if (e.key === "ArrowDown") {
-      setDropFast(true);
-      moveActivePiece(0, 1);
-      e.preventDefault();
-    } else if (e.key === "ArrowUp" || key === "x") {
-      rotateActivePiece("cw");
-      e.preventDefault();
-    } else if (key === "z") {
-      rotateActivePiece("ccw");
-      e.preventDefault();
-    } else if (key === "a") {
-      rotateActivePiece("180");
-      e.preventDefault();
-    } else if (key === "c") {
-      holdActivePiece();
-      e.preventDefault();
-    } else if (e.code === "Space") {
-      hardDropActivePiece();
-      e.preventDefault();
+    const canPlay = !paused && !gameOver;
+    const softDropActive = canPlay && currentKeyState.softDrop;
+    if (softDropAppliedRef.current !== softDropActive) {
+      softDropAppliedRef.current = softDropActive;
+      setDropFast(softDropActive);
     }
-  };
 
-  const onKeyUp = (e) => {
-    if (e.key === "ArrowDown") setDropFast(false);
-  };
+    if (!canPlay) {
+      queued.hardDrop = false;
+      queued.hold = false;
+      commitKeyFrame();
+      return;
+    }
 
-  const reset = () => {
-    startNewGame();
-    rootRef.current?.focus();
-  };
+    if (queued.hardDrop) {
+      queued.hardDrop = false;
+      hardDropActivePiece();
+    }
+
+    if (queued.hold) {
+      queued.hold = false;
+      holdActivePiece();
+    }
+
+    const leftPressed = currentKeyState.left;
+    const rightPressed = currentKeyState.right;
+    if (leftPressed || rightPressed) {
+      if (leftPressed && rightPressed) {
+        const leftTiming = repeatTimingRef.current.left;
+        const rightTiming = repeatTimingRef.current.right;
+        const primary = leftTiming.pressedAt >= rightTiming.pressedAt ? "left" : "right";
+        const secondary = primary === "left" ? "right" : "left";
+
+        const shouldMovePrimary = pollRepeatControl(
+          primary,
+          now,
+          INPUT_TIMING.DAS_MS,
+          INPUT_TIMING.ARR_MS,
+          true,
+        );
+
+        pollRepeatControl(
+          secondary,
+          now,
+          INPUT_TIMING.DAS_MS,
+          INPUT_TIMING.ARR_MS,
+          false,
+        );
+
+        if (shouldMovePrimary) {
+          moveActivePiece(primary === "left" ? -1 : 1, 0);
+        }
+      } else if (leftPressed) {
+        if (pollRepeatControl("left", now, INPUT_TIMING.DAS_MS, INPUT_TIMING.ARR_MS)) {
+          moveActivePiece(-1, 0);
+        }
+      } else if (
+        pollRepeatControl("right", now, INPUT_TIMING.DAS_MS, INPUT_TIMING.ARR_MS)
+      ) {
+        moveActivePiece(1, 0);
+      }
+    }
+
+    const rotateCWPressed = currentKeyState.rotateCW && !prevKeyState.rotateCW;
+    const rotateCCWPressed = currentKeyState.rotateCCW && !prevKeyState.rotateCCW;
+    const rotate180Pressed = currentKeyState.rotate180 && !prevKeyState.rotate180;
+
+    if (rotateCWPressed) {
+      rotateActivePiece("cw");
+    }
+
+    if (rotateCCWPressed) {
+      rotateActivePiece("ccw");
+    }
+
+    if (rotate180Pressed) {
+      rotateActivePiece("180");
+    }
+
+    commitKeyFrame();
+  }, [
+    gameOver,
+    hardDropActivePiece,
+    holdActivePiece,
+    moveActivePiece,
+    paused,
+    pollRepeatControl,
+    reset,
+    rotateActivePiece,
+  ]);
+
+  useEffect(() => {
+    let frameId = null;
+
+    const step = (now) => {
+      processInputFrame(now);
+      frameId = requestAnimationFrame(step);
+    };
+
+    frameId = requestAnimationFrame(step);
+    return () => {
+      if (frameId !== null) cancelAnimationFrame(frameId);
+    };
+  }, [processInputFrame]);
+
+  useEffect(() => {
+    return () => {
+      clearInputState();
+    };
+  }, [clearInputState]);
+
+  const onKeyDown = useCallback((e) => {
+    if (!CODE_TO_CONTROLS[e.code]) return;
+    e.preventDefault();
+    if (e.repeat) return;
+    syncControlForCode(e.code, true, performance.now());
+  }, [syncControlForCode]);
+
+  const onKeyUp = useCallback((e) => {
+    if (!CODE_TO_CONTROLS[e.code]) return;
+    e.preventDefault();
+    syncControlForCode(e.code, false, performance.now());
+  }, [syncControlForCode]);
+
+  const onInputBlur = useCallback(() => {
+    clearInputState();
+  }, [clearInputState]);
 
   const view = piece ? cellsWithCurrentPiece(board, piece) : board;
   const ghostPiece = piece ? getGhostPiece(board, piece) : null;
@@ -584,6 +839,7 @@ export default function GameBoard() {
       tabIndex={0}
       onKeyDown={onKeyDown}
       onKeyUp={onKeyUp}
+      onBlur={onInputBlur}
       aria-label="Tetris game board"
       role="application"
     >
@@ -732,7 +988,7 @@ export default function GameBoard() {
           fontSize: 12,
         }}
       >
-        <div style={{ color: "#9ea2be" }}>NEXT 5</div>
+        <div style={{ color: "#9ea2be" }}>NEXT</div>
         {Array.from({ length: NEXT_PREVIEW_COUNT }, (_, index) => (
           <div
             key={`next-${index}`}
