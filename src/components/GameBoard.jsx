@@ -62,6 +62,51 @@ function mergePiece(board, piece) {
   return next;
 }
 
+function getGhostPiece(board, piece) {
+  let drop = 0;
+  while (!collides(board, piece, 0, drop + 1)) {
+    drop += 1;
+  }
+  return { ...piece, y: piece.y + drop };
+}
+
+function getPieceCellSet(piece) {
+  const cells = new Set();
+  const { shape, x, y } = piece;
+
+  for (let py = 0; py < shape.length; py++) {
+    for (let px = 0; px < shape[py].length; px++) {
+      if (!shape[py][px]) continue;
+      const gx = x + px;
+      const gy = y + py;
+      if (gy < 0 || gy >= ROWS || gx < 0 || gx >= COLS) continue;
+      cells.add(`${gx},${gy}`);
+    }
+  }
+
+  return cells;
+}
+
+function hexToRgba(hex, alpha) {
+  const clean = hex.replace("#", "");
+  const normalized = clean.length === 3
+    ? clean
+      .split("")
+      .map((c) => c + c)
+      .join("")
+    : clean;
+
+  const value = Number.parseInt(normalized, 16);
+  if (Number.isNaN(value)) {
+    return `rgba(255,255,255,${alpha})`;
+  }
+
+  const r = (value >> 16) & 255;
+  const g = (value >> 8) & 255;
+  const b = value & 255;
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
 // TETR.IO default lock delay is 30 frames at 60 Hz (~500 ms).
 const LOCK_DELAY_MS = 500;
 const NEXT_PREVIEW_COUNT = 5;
@@ -518,6 +563,10 @@ export default function GameBoard() {
   };
 
   const view = piece ? cellsWithCurrentPiece(board, piece) : board;
+  const ghostPiece = piece ? getGhostPiece(board, piece) : null;
+  const ghostCells = ghostPiece ? getPieceCellSet(ghostPiece) : new Set();
+  const ghostFill = piece ? hexToRgba(COLORS[piece.id], 0.18) : "transparent";
+  const ghostStroke = piece ? hexToRgba(COLORS[piece.id], 0.65) : "transparent";
 
   return (
     <div
@@ -634,15 +683,17 @@ export default function GameBoard() {
           {view.map((row, y) =>
             row.map((cell, x) => {
               const filled = cell !== 0;
+              const isGhost = !filled && ghostCells.has(`${x},${y}`);
               return (
                 <div
                   key={`${y}-${x}`}
                   style={{
                     width: CELL_SIZE,
                     height: CELL_SIZE,
-                    background: filled ? COLORS[cell] : COLORS[0],
+                    background: filled ? COLORS[cell] : isGhost ? ghostFill : COLORS[0],
                     borderRadius: 3,
                     boxShadow: filled ? "inset 0 0 3px rgba(0,0,0,0.5)" : "none",
+                    border: isGhost ? `1px dashed ${ghostStroke}` : "none",
                   }}
                 />
               );
