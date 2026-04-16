@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { createEmptyBoard, cloneBoard, clearLines } from "../game/board";
 import { createBagRNG, createPieceByType } from "../game/pieces";
 import { formatCells, tryRotatePieceSRS } from "../game/rotation";
+import { formatDuration } from "../game/sprint";
 import {
   COLS,
   ROWS,
@@ -246,7 +247,15 @@ function renderMiniPiece(type) {
   );
 }
 
-export default function GameBoard() {
+export default function GameBoard({
+  gameMode,
+  sprintTargetLines = 40,
+  elapsedTimeMs = 0,
+  onFirstGameplayInput,
+  onSprintProgress,
+  onSprintComplete,
+  allowManualReset = true,
+}) {
   const [board, setBoard] = useState(() => createEmptyBoard());
   const initDoneRef = useRef(false);
   const debugRotation = useRef(
@@ -266,11 +275,15 @@ export default function GameBoard() {
   const [score, setScore] = useState(0);
   const [lines, setLines] = useState(0);
   const [level, setLevel] = useState(0);
+  const [piecesPlaced, setPiecesPlaced] = useState(0);
 
   const rootRef = useRef(null);
   const boardRef = useRef(board);
   const pieceRef = useRef(piece);
   const levelRef = useRef(level);
+  const linesRef = useRef(lines);
+  const piecesPlacedRef = useRef(0);
+  const hasNotifiedFirstInputRef = useRef(false);
   const lockTimerRef = useRef(null);
   const previewQueueRef = useRef([]);
   const holdUsedRef = useRef(false);
@@ -292,6 +305,18 @@ export default function GameBoard() {
   useEffect(() => {
     levelRef.current = level;
   }, [level]);
+
+  useEffect(() => {
+    linesRef.current = lines;
+  }, [lines]);
+
+  const isSprintMode = gameMode === "sprint";
+
+  const markFirstGameplayInput = useCallback(() => {
+    if (hasNotifiedFirstInputRef.current) return;
+    hasNotifiedFirstInputRef.current = true;
+    onFirstGameplayInput?.();
+  }, [onFirstGameplayInput]);
 
   const clearLockTimer = useCallback(() => {
     if (lockTimerRef.current === null) return;
@@ -337,6 +362,9 @@ export default function GameBoard() {
     boardRef.current = emptyBoard;
     pieceRef.current = firstPiece;
     levelRef.current = 0;
+    linesRef.current = 0;
+    piecesPlacedRef.current = 0;
+    hasNotifiedFirstInputRef.current = false;
     holdUsedRef.current = false;
 
     setBoard(emptyBoard);
@@ -349,7 +377,23 @@ export default function GameBoard() {
     setScore(0);
     setLines(0);
     setLevel(0);
-  }, [clearLockTimer, fillPreviewQueue, syncNextQueueState]);
+    setPiecesPlaced(0);
+
+    if (isSprintMode) {
+      onSprintProgress?.({
+        linesCleared: 0,
+        totalPiecesPlaced: 0,
+        targetLines: sprintTargetLines,
+      });
+    }
+  }, [
+    clearLockTimer,
+    fillPreviewQueue,
+    isSprintMode,
+    onSprintProgress,
+    sprintTargetLines,
+    syncNextQueueState,
+  ]);
 
   const clearInputState = useCallback(() => {
     pressedKeysRef.current.clear();
@@ -468,18 +512,40 @@ export default function GameBoard() {
     boardRef.current = clearedBoard;
     setBoard(clearedBoard);
 
+    const nextPiecesPlaced = piecesPlacedRef.current + 1;
+    piecesPlacedRef.current = nextPiecesPlaced;
+    setPiecesPlaced(nextPiecesPlaced);
+
+    const nextTotalLines = linesRef.current + linesCleared;
+    linesRef.current = nextTotalLines;
+
     if (linesCleared > 0) {
       const currentLevel = levelRef.current;
       setScore((s) => s + (SCORES?.[linesCleared] || 0) * (currentLevel + 1));
-      setLines((ln) => {
-        const total = ln + linesCleared;
-        const newLevel = Math.floor(total / LINES_PER_LEVEL);
-        if (newLevel !== levelRef.current) {
-          levelRef.current = newLevel;
-          setLevel(newLevel);
-        }
-        return total;
+      setLines(nextTotalLines);
+
+      const newLevel = Math.floor(nextTotalLines / LINES_PER_LEVEL);
+      if (newLevel !== levelRef.current) {
+        levelRef.current = newLevel;
+        setLevel(newLevel);
+      }
+    }
+
+    if (isSprintMode) {
+      onSprintProgress?.({
+        linesCleared: nextTotalLines,
+        totalPiecesPlaced: nextPiecesPlaced,
+        targetLines: sprintTargetLines,
       });
+
+      if (nextTotalLines >= sprintTargetLines) {
+        setGameOver(true);
+        onSprintComplete?.({
+          linesCleared: nextTotalLines,
+          totalPiecesPlaced: nextPiecesPlaced,
+        });
+        return;
+      }
     }
 
     const next = drawNextPiece();
@@ -492,7 +558,14 @@ export default function GameBoard() {
 
     pieceRef.current = next;
     setPiece(next);
-  }, [clearLockTimer, drawNextPiece]);
+  }, [
+    clearLockTimer,
+    drawNextPiece,
+    isSprintMode,
+    onSprintComplete,
+    onSprintProgress,
+    sprintTargetLines,
+  ]);
 
   const scheduleLockTimer = useCallback(() => {
     if (lockTimerRef.current !== null) return;
@@ -684,7 +757,9 @@ export default function GameBoard() {
 
     if (queued.reset) {
       queued.reset = false;
-      reset();
+      if (allowManualReset) {
+        reset();
+      }
       commitKeyFrame();
       return;
     }
@@ -705,11 +780,13 @@ export default function GameBoard() {
 
     if (queued.hardDrop) {
       queued.hardDrop = false;
+      markFirstGameplayInput();
       hardDropActivePiece();
     }
 
     if (queued.hold) {
       queued.hold = false;
+      markFirstGameplayInput();
       holdActivePiece();
     }
 
@@ -739,17 +816,24 @@ export default function GameBoard() {
         );
 
         if (shouldMovePrimary) {
+          markFirstGameplayInput();
           moveActivePiece(primary === "left" ? -1 : 1, 0);
         }
       } else if (leftPressed) {
         if (pollRepeatControl("left", now, INPUT_TIMING.DAS_MS, INPUT_TIMING.ARR_MS)) {
+          markFirstGameplayInput();
           moveActivePiece(-1, 0);
         }
       } else if (
         pollRepeatControl("right", now, INPUT_TIMING.DAS_MS, INPUT_TIMING.ARR_MS)
       ) {
+        markFirstGameplayInput();
         moveActivePiece(1, 0);
       }
+    }
+
+    if (currentKeyState.softDrop && !prevKeyState.softDrop) {
+      markFirstGameplayInput();
     }
 
     const rotateCWPressed = currentKeyState.rotateCW && !prevKeyState.rotateCW;
@@ -757,14 +841,17 @@ export default function GameBoard() {
     const rotate180Pressed = currentKeyState.rotate180 && !prevKeyState.rotate180;
 
     if (rotateCWPressed) {
+      markFirstGameplayInput();
       rotateActivePiece("cw");
     }
 
     if (rotateCCWPressed) {
+      markFirstGameplayInput();
       rotateActivePiece("ccw");
     }
 
     if (rotate180Pressed) {
+      markFirstGameplayInput();
       rotateActivePiece("180");
     }
 
@@ -778,6 +865,8 @@ export default function GameBoard() {
     pollRepeatControl,
     reset,
     rotateActivePiece,
+    allowManualReset,
+    markFirstGameplayInput,
   ]);
 
   useEffect(() => {
@@ -883,23 +972,25 @@ export default function GameBoard() {
           <div>Rotate 180: A</div>
           <div>Hold: C</div>
           <div>Pause: P</div>
-          <div>Reset: R</div>
+          {allowManualReset && <div>Reset: R</div>}
         </div>
 
-        <button
-          onClick={reset}
-          style={{
-            padding: "7px 12px",
-            background: "#20232a",
-            color: "#fff",
-            border: "1px solid #2f2f36",
-            borderRadius: 6,
-            cursor: "pointer",
-            width: "100%",
-          }}
-        >
-          Reset
-        </button>
+        {allowManualReset && (
+          <button
+            onClick={reset}
+            style={{
+              padding: "7px 12px",
+              background: "#20232a",
+              color: "#fff",
+              border: "1px solid #2f2f36",
+              borderRadius: 6,
+              cursor: "pointer",
+              width: "100%",
+            }}
+          >
+            Reset
+          </button>
+        )}
       </div>
 
       <div
@@ -918,9 +1009,19 @@ export default function GameBoard() {
             fontSize: 14,
           }}
         >
-          <div>Score: {score}</div>
-          <div>Lines: {lines}</div>
-          <div>Level: {level}</div>
+          {isSprintMode ? (
+            <>
+              <div>Time: {formatDuration(elapsedTimeMs)}</div>
+              <div>Lines: {lines}/{sprintTargetLines}</div>
+              <div>Pieces: {piecesPlaced}</div>
+            </>
+          ) : (
+            <>
+              <div>Score: {score}</div>
+              <div>Lines: {lines}</div>
+              <div>Level: {level}</div>
+            </>
+          )}
         </div>
 
         <div
