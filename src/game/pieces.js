@@ -1,34 +1,7 @@
-import { COLS, PIECE_IDS } from "./constants";
+import { COLS, PIECE_IDS } from "./constants.js";
+import { getPieceShape } from "./rotation.js";
 
-// Shapes are matrices with 1s for filled cells; we store the piece id separately.
-// Rotation will come later; for now we use these "spawn" orientations.
-const SHAPES = {
-  O: [
-    [1, 1],
-    [1, 1],
-  ],
-  I: [[1, 1, 1, 1]],
-  T: [
-    [0, 1, 0],
-    [1, 1, 1],
-  ],
-  S: [
-    [0, 1, 1],
-    [1, 1, 0],
-  ],
-  Z: [
-    [1, 1, 0],
-    [0, 1, 1],
-  ],
-  J: [
-    [1, 0, 0],
-    [1, 1, 1],
-  ],
-  L: [
-    [0, 0, 1],
-    [1, 1, 1],
-  ],
-};
+const PIECE_TYPES = ["O", "I", "T", "S", "Z", "J", "L"];
 
 // Center the piece horizontally by its width.
 // In classic rules some pieces have special spawn columns; centering is fine for now.
@@ -38,7 +11,9 @@ function spawnX(shape) {
 }
 
 function spawnPiece(type) {
-  const shape = SHAPES[type];
+  const shape = getPieceShape(type, 0);
+  if (!shape) return null;
+
   return {
     type,
     id: PIECE_IDS[type], // numeric id stored on the board
@@ -50,7 +25,7 @@ function spawnPiece(type) {
 }
 
 export function createPieceByType(type) {
-  if (!SHAPES[type]) return null;
+  if (!PIECE_TYPES.includes(type)) return null;
   return spawnPiece(type);
 }
 
@@ -88,7 +63,7 @@ function createSeededRandom(seed) {
 }
 
 // 7-bag RNG: each "bag" contains one of each piece; we exhaust and then refill.
-const BAG_PIECES = ["O", "I", "T", "S", "Z", "J", "L"];
+const BAG_PIECES = [...PIECE_TYPES];
 
 export function createBagRNG(options = {}) {
   const random =

@@ -53,6 +53,7 @@ describe("SRS and SRS+ rotation kicks", () => {
     piece.x = COLS - 3;
     piece.y = 6;
 
+    // Block only the first two kick attempts; allow the third (-1, -1).
     setCell(board, COLS - 2, 6);
 
     const { result, debugInfo } = rotateWithDebug(board, piece, "cw");
@@ -60,8 +61,8 @@ describe("SRS and SRS+ rotation kicks", () => {
     expect(result).not.toBe(piece);
     expect(result.rot).toBe(1);
     expect(result.x).toBe(COLS - 4);
-    expect(result.y).toBe(6);
-    expect(debugInfo.acceptedKick).toEqual({ dx: -1, dy: 0 });
+    expect(result.y).toBe(5);
+    expect(debugInfo.acceptedKick).toEqual({ dx: -1, dy: -1 });
   });
 
   it("uses I-piece specific wall kick table (CW)", () => {
@@ -71,7 +72,8 @@ describe("SRS and SRS+ rotation kicks", () => {
     piece.x = COLS - 4;
     piece.y = 4;
 
-    setCell(board, COLS - 4, 4);
+    // Block the in-place vertical result at x=8; allow the x-2 kick to x=6.
+    setCell(board, COLS - 2, 5);
 
     const { result, debugInfo } = rotateWithDebug(board, piece, "cw");
 
@@ -90,7 +92,7 @@ describe("SRS and SRS+ rotation kicks", () => {
     piece.y = 16;
 
     // Blocks 0,0 and -1,0 checks; allows -1,-1.
-    setCell(board, 4, 17);
+    setCell(board, 5, 17);
 
     const { result, debugInfo } = rotateWithDebug(board, piece, "cw");
 
@@ -124,8 +126,10 @@ describe("SRS and SRS+ rotation kicks", () => {
     piece.x = 0;
     piece.y = 0;
 
-    // Block the no-kick and +y kick placements; x- kicks are out-of-bounds at wall.
-    setCell(board, 0, 2);
+    // Block all legal kick targets from this wall position.
+    setCell(board, 0, 0);
+    setCell(board, 0, 3);
+    setCell(board, 1, 2);
 
     const { result, debugInfo } = rotateWithDebug(board, piece, "cw");
 

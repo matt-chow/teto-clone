@@ -30,6 +30,68 @@ function rotateShape180(shape) {
   return rotateShapeCW(rotateShapeCW(shape));
 }
 
+function cloneShape(shape) {
+  return shape.map((row) => row.slice());
+}
+
+function normalizeRot(rot) {
+  return ((rot % 4) + 4) % 4;
+}
+
+const SPAWN_STATE_SHAPES = {
+  O: [
+    [1, 1],
+    [1, 1],
+  ],
+  I: [
+    [0, 0, 0, 0],
+    [1, 1, 1, 1],
+    [0, 0, 0, 0],
+    [0, 0, 0, 0],
+  ],
+  T: [
+    [0, 1, 0],
+    [1, 1, 1],
+    [0, 0, 0],
+  ],
+  S: [
+    [0, 1, 1],
+    [1, 1, 0],
+    [0, 0, 0],
+  ],
+  Z: [
+    [1, 1, 0],
+    [0, 1, 1],
+    [0, 0, 0],
+  ],
+  J: [
+    [1, 0, 0],
+    [1, 1, 1],
+    [0, 0, 0],
+  ],
+  L: [
+    [0, 0, 1],
+    [1, 1, 1],
+    [0, 0, 0],
+  ],
+};
+
+const SHAPES_BY_ROTATION = Object.fromEntries(
+  Object.entries(SPAWN_STATE_SHAPES).map(([type, shape0]) => {
+    const state0 = cloneShape(shape0);
+    const state1 = rotateShapeCW(state0);
+    const state2 = rotateShapeCW(state1);
+    const state3 = rotateShapeCW(state2);
+    return [type, [state0, state1, state2, state3]];
+  }),
+);
+
+export function getPieceShape(type, rot = 0) {
+  const states = SHAPES_BY_ROTATION[type];
+  if (!states) return null;
+  return cloneShape(states[normalizeRot(rot)]);
+}
+
 function getFilledOffsets(shape) {
   const cells = [];
   for (let y = 0; y < shape.length; y++) {
@@ -42,16 +104,21 @@ function getFilledOffsets(shape) {
 }
 
 export function getOccupiedCells(piece, dx = 0, dy = 0) {
-  const { shape, x, y } = piece;
-  const cells = [];
+  const rot = piece.rot ?? 0;
+  return getRotatedCells(piece.type, rot, piece.x + dx, piece.y + dy);
+}
 
+export function getRotatedCells(pieceType, rotationState, x = 0, y = 0) {
+  const shape = getPieceShape(pieceType, rotationState);
+  if (!shape) return [];
+
+  const cells = [];
   for (let py = 0; py < shape.length; py++) {
     for (let px = 0; px < shape[py].length; px++) {
       if (!shape[py][px]) continue;
-      cells.push({ x: x + px + dx, y: y + py + dy, px, py });
+      cells.push({ x: x + px, y: y + py, px, py });
     }
   }
-
   return cells;
 }
 
@@ -127,8 +194,8 @@ function collidesWithBoard(board, piece, dx, dy) {
   return !inspectPlacement(board, piece, dx, dy).fits;
 }
 
-// SRS kick data adapted for screen coordinates (y grows downward).
-const JLSTZ_KICKS = {
+// Strict SRS kick data adapted for screen coordinates (y grows downward).
+const JLSTZ_KICKS_SRS = {
   "0>1": [[0, 0], [-1, 0], [-1, -1], [0, 2], [-1, 2]],
   "1>0": [[0, 0], [1, 0], [1, 1], [0, -2], [1, -2]],
   "1>2": [[0, 0], [1, 0], [1, 1], [0, -2], [1, -2]],
@@ -139,7 +206,7 @@ const JLSTZ_KICKS = {
   "0>3": [[0, 0], [1, 0], [1, -1], [0, 2], [1, 2]],
 };
 
-const I_KICKS = {
+const I_KICKS_SRS = {
   "0>1": [[0, 0], [-2, 0], [1, 0], [-2, 1], [1, -2]],
   "1>0": [[0, 0], [2, 0], [-1, 0], [2, -1], [-1, 2]],
   "1>2": [[0, 0], [-1, 0], [2, 0], [-1, -2], [2, 1]],
@@ -150,19 +217,29 @@ const I_KICKS = {
   "0>3": [[0, 0], [-1, 0], [2, 0], [-1, -2], [2, 1]],
 };
 
-// SRS+ 180 kick data (TETR.IO-style), adapted for y-down coordinates.
-const JLSTZ_180_KICKS = {
+// TETR.IO SRS+ 180 kick data (y-down coordinates).
+const JLSTZ_180_KICKS_TETRIO = {
   "0>2": [[0, 0], [0, -1], [1, -1], [-1, -1], [1, 0], [-1, 0]],
   "1>3": [[0, 0], [1, 0], [1, -2], [1, -1], [0, -2], [0, -1]],
   "2>0": [[0, 0], [0, 1], [-1, 1], [1, 1], [-1, 0], [1, 0]],
   "3>1": [[0, 0], [-1, 0], [-1, -2], [-1, -1], [0, -2], [0, -1]],
 };
 
-const I_180_KICKS = {
+const I_180_KICKS_TETRIO = {
   "0>2": [[0, 0], [1, 0], [2, 0], [-1, 0], [-2, 0]],
   "1>3": [[0, 0], [0, 1], [0, 2], [0, -1], [0, -2]],
   "2>0": [[0, 0], [-1, 0], [-2, 0], [1, 0], [2, 0]],
   "3>1": [[0, 0], [0, 1], [0, 2], [0, -1], [0, -2]],
+};
+
+const kickTablesSRS = {
+  jlstz: JLSTZ_KICKS_SRS,
+  i: I_KICKS_SRS,
+};
+
+const kickTablesTetrio180 = {
+  jlstz180: JLSTZ_180_KICKS_TETRIO,
+  i180: I_180_KICKS_TETRIO,
 };
 
 function rotateState(rot, dir) {
@@ -177,17 +254,23 @@ function getRotatedShape(shape, dir) {
   return rotateShape180(shape);
 }
 
-export function getKickTests(type, fromRot, toRot, dir) {
+export function getKickOffsets(type, fromRot, toRot, dir, profile = "tetrio") {
   if (type === "O") return [[0, 0]];
-
   const key = `${fromRot}>${toRot}`;
+
   if (dir === "180") {
-    if (type === "I") return I_180_KICKS[key] || [[0, 0]];
-    return JLSTZ_180_KICKS[key] || [[0, 0]];
+    if (profile !== "tetrio") return [[0, 0]];
+    if (type === "I") return kickTablesTetrio180.i180[key] || [[0, 0]];
+    return kickTablesTetrio180.jlstz180[key] || [[0, 0]];
   }
 
-  if (type === "I") return I_KICKS[key] || [[0, 0]];
-  return JLSTZ_KICKS[key] || [[0, 0]];
+  if (type === "I") return kickTablesSRS.i[key] || [[0, 0]];
+  return kickTablesSRS.jlstz[key] || [[0, 0]];
+}
+
+// Backward-compatible alias used by existing tests.
+export function getKickTests(type, fromRot, toRot, dir) {
+  return getKickOffsets(type, fromRot, toRot, dir, "tetrio");
 }
 
 function normalizeRotationOptions(optionsOrCollides) {
@@ -196,6 +279,7 @@ function normalizeRotationOptions(optionsOrCollides) {
       collidesFn: optionsOrCollides,
       debug: false,
       onDebug: null,
+      profile: "tetrio",
     };
   }
 
@@ -205,17 +289,22 @@ function normalizeRotationOptions(optionsOrCollides) {
       typeof options.collidesFn === "function" ? options.collidesFn : collidesWithBoard,
     debug: options.debug === true,
     onDebug: typeof options.onDebug === "function" ? options.onDebug : null,
+    profile: options.profile === "srs" ? "srs" : "tetrio",
   };
 }
 
 export function tryRotatePieceSRS(board, piece, direction, optionsOrCollides) {
-  const { collidesFn, debug, onDebug } = normalizeRotationOptions(optionsOrCollides);
+  return tryRotate(board, piece, direction, optionsOrCollides);
+}
+
+export function tryRotate(board, piece, direction, optionsOrCollides) {
+  const { collidesFn, debug, onDebug, profile } = normalizeRotationOptions(optionsOrCollides);
   const fromRot = piece.rot ?? 0;
   const toRot = rotateState(fromRot, direction);
-  const rotatedShape = getRotatedShape(piece.shape, direction);
+  const rotatedShape = getPieceShape(piece.type, toRot) || getRotatedShape(piece.shape, direction);
 
   const rotated = { ...piece, shape: rotatedShape, rot: toRot };
-  const kicks = getKickTests(piece.type, fromRot, toRot, direction);
+  const kicks = getKickOffsets(piece.type, fromRot, toRot, direction, profile);
   const attempts = [];
 
   const originCells = getOccupiedCells(piece);
@@ -253,6 +342,7 @@ export function tryRotatePieceSRS(board, piece, direction, optionsOrCollides) {
           attempts,
           acceptedKick: { dx, dy },
           acceptedCells: getOccupiedCells(accepted),
+          profile,
         });
       }
       return accepted;
@@ -272,8 +362,26 @@ export function tryRotatePieceSRS(board, piece, direction, optionsOrCollides) {
       attempts,
       acceptedKick: null,
       acceptedCells: null,
+      profile,
     });
   }
 
   return piece;
+}
+
+export function getRotationAuditSummary() {
+  return {
+    axis: {
+      xIncreasesRight: true,
+      yIncreasesDown: true,
+    },
+    boardIndexing: {
+      order: "board[y][x]",
+      origin: { x: 0, y: 0 },
+    },
+    pieceAnchor: "piece.x and piece.y are the top-left cell of the piece bounding box",
+    rotationStates: [0, 1, 2, 3],
+    stateNames: ["0", "R", "2", "L"],
+    kickProfiles: ["srs", "tetrio"],
+  };
 }

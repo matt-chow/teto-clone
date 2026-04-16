@@ -1,4 +1,4 @@
-import { ROWS, COLS } from "./constants";
+import { ROWS, COLS } from "./constants.js";
 
 // Create an empty game board
 export function createEmptyBoard() {
