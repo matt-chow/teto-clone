@@ -268,7 +268,6 @@ export default function GameBoard({
   const [holdType, setHoldType] = useState(null);
   const [nextQueue, setNextQueue] = useState([]);
 
-  const [dropFast, setDropFast] = useState(false);
   const [gameOver, setGameOver] = useState(false);
   const [paused, setPaused] = useState(false);
 
@@ -284,6 +283,8 @@ export default function GameBoard({
   const linesRef = useRef(lines);
   const piecesPlacedRef = useRef(0);
   const hasNotifiedFirstInputRef = useRef(false);
+  const gravityAccumulatorRef = useRef(0);
+  const lastFrameTimeRef = useRef(null);
   const lockTimerRef = useRef(null);
   const previewQueueRef = useRef([]);
   const holdUsedRef = useRef(false);
@@ -292,7 +293,6 @@ export default function GameBoard({
   const prevKeyStateRef = useRef(createInitialKeyState());
   const repeatTimingRef = useRef(createInitialRepeatTiming());
   const queuedActionsRef = useRef(createInitialQueuedActions());
-  const softDropAppliedRef = useRef(false);
 
   useEffect(() => {
     boardRef.current = board;
@@ -365,13 +365,14 @@ export default function GameBoard({
     linesRef.current = 0;
     piecesPlacedRef.current = 0;
     hasNotifiedFirstInputRef.current = false;
+    gravityAccumulatorRef.current = 0;
+    lastFrameTimeRef.current = null;
     holdUsedRef.current = false;
 
     setBoard(emptyBoard);
     setPiece(firstPiece);
     setHoldType(null);
     syncNextQueueState();
-    setDropFast(false);
     setGameOver(false);
     setPaused(false);
     setScore(0);
@@ -401,10 +402,8 @@ export default function GameBoard({
     prevKeyStateRef.current = createInitialKeyState();
     repeatTimingRef.current = createInitialRepeatTiming();
     queuedActionsRef.current = createInitialQueuedActions();
-    if (softDropAppliedRef.current) {
-      softDropAppliedRef.current = false;
-      setDropFast(false);
-    }
+    gravityAccumulatorRef.current = 0;
+    lastFrameTimeRef.current = null;
   }, []);
 
   const setControlPressed = useCallback((control, isPressed, timestamp) => {
@@ -492,8 +491,6 @@ export default function GameBoard({
   const drawNextPiece = useCallback(() => {
     return popNextPiece();
   }, [popNextPiece]);
-
-  const currentDelay = dropFast ? GRAVITY_FAST : gravityForLevel(level);
 
   const lockCurrentPiece = useCallback(() => {
     const currentPiece = pieceRef.current;
@@ -704,29 +701,6 @@ export default function GameBoard({
     holdUsedRef.current = true;
   }, [clearLockTimer, holdType, popNextPiece]);
 
-  // Gravity tick: move down if possible, otherwise lock/clear/spawn.
-  const tick = useCallback(() => {
-    const currentPiece = pieceRef.current;
-    const currentBoard = boardRef.current;
-    if (!currentPiece) return;
-
-    if (collides(currentBoard, currentPiece, 0, 1)) {
-      scheduleLockTimer();
-      return;
-    }
-
-    clearLockTimer();
-    const moved = { ...currentPiece, y: currentPiece.y + 1 };
-    pieceRef.current = moved;
-    setPiece(moved);
-  }, [clearLockTimer, scheduleLockTimer]);
-
-  useEffect(() => {
-    if (gameOver || paused) return;
-    const id = setInterval(tick, currentDelay);
-    return () => clearInterval(id);
-  }, [tick, currentDelay, gameOver, paused]);
-
   useEffect(() => {
     if (paused || gameOver) {
       clearLockTimer();
@@ -746,11 +720,21 @@ export default function GameBoard({
       prevKeyStateRef.current = { ...currentKeyState };
     };
 
+    if (lastFrameTimeRef.current === null) {
+      lastFrameTimeRef.current = now;
+    }
+
+    let deltaMs = now - lastFrameTimeRef.current;
+    if (deltaMs < 0) deltaMs = 0;
+    if (deltaMs > 100) deltaMs = 100;
+    lastFrameTimeRef.current = now;
+
     const queued = queuedActionsRef.current;
 
     if (queued.pause) {
       queued.pause = false;
       setPaused((prev) => !prev);
+      gravityAccumulatorRef.current = 0;
       commitKeyFrame();
       return;
     }
@@ -760,20 +744,17 @@ export default function GameBoard({
       if (allowManualReset) {
         reset();
       }
+      gravityAccumulatorRef.current = 0;
       commitKeyFrame();
       return;
     }
 
     const canPlay = !paused && !gameOver;
-    const softDropActive = canPlay && currentKeyState.softDrop;
-    if (softDropAppliedRef.current !== softDropActive) {
-      softDropAppliedRef.current = softDropActive;
-      setDropFast(softDropActive);
-    }
 
     if (!canPlay) {
       queued.hardDrop = false;
       queued.hold = false;
+      gravityAccumulatorRef.current = 0;
       commitKeyFrame();
       return;
     }
@@ -855,8 +836,35 @@ export default function GameBoard({
       rotateActivePiece("180");
     }
 
+    const gravityStepMs = currentKeyState.softDrop
+      ? GRAVITY_FAST
+      : gravityForLevel(levelRef.current);
+    gravityAccumulatorRef.current += deltaMs;
+
+    while (gravityAccumulatorRef.current >= gravityStepMs) {
+      const currentPiece = pieceRef.current;
+      const currentBoard = boardRef.current;
+      if (!currentPiece) {
+        gravityAccumulatorRef.current = 0;
+        break;
+      }
+
+      if (collides(currentBoard, currentPiece, 0, 1)) {
+        scheduleLockTimer();
+        gravityAccumulatorRef.current = 0;
+        break;
+      }
+
+      clearLockTimer();
+      const moved = { ...currentPiece, y: currentPiece.y + 1 };
+      pieceRef.current = moved;
+      setPiece(moved);
+      gravityAccumulatorRef.current -= gravityStepMs;
+    }
+
     commitKeyFrame();
   }, [
+    clearLockTimer,
     gameOver,
     hardDropActivePiece,
     holdActivePiece,
@@ -865,6 +873,7 @@ export default function GameBoard({
     pollRepeatControl,
     reset,
     rotateActivePiece,
+    scheduleLockTimer,
     allowManualReset,
     markFirstGameplayInput,
   ]);
