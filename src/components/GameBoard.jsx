@@ -124,7 +124,8 @@ function hexToRgba(hex, alpha) {
 // TETR.IO default lock delay is 30 frames at 60 Hz (~500 ms).
 const LOCK_DELAY_MS = 500;
 const COUNTDOWN_STEPS = ["3", "2", "1", "GO"];
-const COUNTDOWN_STEP_MS = 300;
+const COUNTDOWN_STEP_MS = 450;
+const COUNTDOWN_GO_DELAY_MS = 120;
 const NEXT_PREVIEW_COUNT = 5;
 const PREVIEW_BOX = 4;
 const PREVIEW_CELL = 12;
@@ -269,7 +270,6 @@ export default function GameBoard({
   const [gamePhase, setGamePhase] = useState("idle");
   const [countdownLabel, setCountdownLabel] = useState(null);
   const [board, setBoard] = useState(() => createEmptyBoard());
-  const initDoneRef = useRef(false);
   const debugRotation = useRef(
     typeof window !== "undefined" &&
       new URLSearchParams(window.location.search).has("debugRotation"),
@@ -299,6 +299,7 @@ export default function GameBoard({
   const frameIdRef = useRef(null);
   const lockTimerRef = useRef(null);
   const countdownTimersRef = useRef([]);
+  const countdownRunIdRef = useRef(0);
   const elapsedTimeRef = useRef(0);
   const previewQueueRef = useRef([]);
   const holdUsedRef = useRef(false);
@@ -503,6 +504,15 @@ export default function GameBoard({
     clearLockTimer();
     clearInputState();
     clearCountdownTimers();
+    if (frameIdRef.current !== null) {
+      cancelAnimationFrame(frameIdRef.current);
+      frameIdRef.current = null;
+    }
+    countdownRunIdRef.current += 1;
+    const runId = countdownRunIdRef.current;
+
+    // Reset game state first so countdown always starts from a clean run.
+    startNewGame();
 
     setRunSummary(null);
     setGamePhase("countdown");
@@ -510,6 +520,7 @@ export default function GameBoard({
 
     COUNTDOWN_STEPS.forEach((label, index) => {
       const timeoutId = setTimeout(() => {
+        if (countdownRunIdRef.current !== runId) return;
         setCountdownLabel(label);
       }, index * COUNTDOWN_STEP_MS);
 
@@ -517,11 +528,11 @@ export default function GameBoard({
     });
 
     const playTimeoutId = setTimeout(() => {
-      startNewGame();
+      if (countdownRunIdRef.current !== runId) return;
       setGamePhase("playing");
       setCountdownLabel(null);
       rootRef.current?.focus();
-    }, COUNTDOWN_STEPS.length * COUNTDOWN_STEP_MS);
+    }, COUNTDOWN_STEPS.length * COUNTDOWN_STEP_MS + COUNTDOWN_GO_DELAY_MS);
 
     countdownTimersRef.current.push(playTimeoutId);
   }, [clearInputState, clearCountdownTimers, clearLockTimer, startNewGame]);
@@ -556,8 +567,7 @@ export default function GameBoard({
   }, []);
 
   useEffect(() => {
-    if (initDoneRef.current) return;
-    initDoneRef.current = true;
+    console.log("[GameBoard] Auto-start countdown on mount");
     startCountdown();
   }, [startCountdown]);
 
