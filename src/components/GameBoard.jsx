@@ -161,7 +161,7 @@ const CODE_TO_CONTROLS = Object.entries(CONTROL_KEY_CODES).reduce(
 
 const REPEATABLE_CONTROLS = ["left", "right"];
 
-const ONE_SHOT_CONTROLS = ["hardDrop", "hold"];
+const ONE_SHOT_CONTROLS = ["hardDrop"];
 
 const REPEATABLE_CONTROL_SET = new Set(REPEATABLE_CONTROLS);
 const ONE_SHOT_CONTROL_SET = new Set(ONE_SHOT_CONTROLS);
@@ -191,7 +191,6 @@ function createInitialRepeatTiming() {
 function createInitialQueuedActions() {
   return {
     hardDrop: false,
-    hold: false,
   };
 }
 
@@ -279,9 +278,11 @@ export default function GameBoard({
   const [piece, setPiece] = useState(null);
   const [holdType, setHoldType] = useState(null);
   const [nextQueue, setNextQueue] = useState([]);
+  const [canHold, setCanHold] = useState(true);
 
   const [elapsedTimeMs, setElapsedTimeMs] = useState(0);
   const [runSummary, setRunSummary] = useState(null);
+  const [useInfiniteSoftDrop, setUseInfiniteSoftDrop] = useState(false);
 
   const [score, setScore] = useState(0);
   const [lines, setLines] = useState(0);
@@ -291,6 +292,8 @@ export default function GameBoard({
   const rootRef = useRef(null);
   const boardRef = useRef(board);
   const pieceRef = useRef(piece);
+  const holdTypeRef = useRef(holdType);
+  const canHoldRef = useRef(canHold);
   const levelRef = useRef(level);
   const linesRef = useRef(lines);
   const piecesPlacedRef = useRef(0);
@@ -302,7 +305,6 @@ export default function GameBoard({
   const countdownRunIdRef = useRef(0);
   const elapsedTimeRef = useRef(0);
   const previewQueueRef = useRef([]);
-  const holdUsedRef = useRef(false);
   const pressedKeysRef = useRef(new Set());
   const keyStateRef = useRef(createInitialKeyState());
   const prevKeyStateRef = useRef(createInitialKeyState());
@@ -316,6 +318,14 @@ export default function GameBoard({
   useEffect(() => {
     pieceRef.current = piece;
   }, [piece]);
+
+  useEffect(() => {
+    holdTypeRef.current = holdType;
+  }, [holdType]);
+
+  useEffect(() => {
+    canHoldRef.current = canHold;
+  }, [canHold]);
 
   useEffect(() => {
     levelRef.current = level;
@@ -378,17 +388,19 @@ export default function GameBoard({
 
     boardRef.current = emptyBoard;
     pieceRef.current = firstPiece;
+    holdTypeRef.current = null;
+    canHoldRef.current = true;
     levelRef.current = 0;
     linesRef.current = 0;
     piecesPlacedRef.current = 0;
     gravityAccumulatorRef.current = 0;
     lastFrameTimeRef.current = null;
     elapsedTimeRef.current = 0;
-    holdUsedRef.current = false;
 
     setBoard(emptyBoard);
     setPiece(firstPiece);
     setHoldType(null);
+    setCanHold(true);
     syncNextQueueState();
     setElapsedTimeMs(0);
     setRunSummary(null);
@@ -541,6 +553,22 @@ export default function GameBoard({
     startCountdown();
   }, [startCountdown]);
 
+  const togglePause = useCallback(() => {
+    if (gamePhase === "playing") {
+      clearLockTimer();
+      clearInputState();
+      setGamePhase("paused");
+      rootRef.current?.focus();
+      return;
+    }
+
+    if (gamePhase === "paused") {
+      clearInputState();
+      setGamePhase("playing");
+      rootRef.current?.focus();
+    }
+  }, [clearInputState, clearLockTimer, gamePhase]);
+
   const backToMenu = useCallback(() => {
     console.log("[GameBoard] Main Menu click handled");
     clearLockTimer();
@@ -572,7 +600,9 @@ export default function GameBoard({
   }, [startCountdown]);
 
   const drawNextPiece = useCallback(() => {
-    return popNextPiece();
+    const queuedNext = popNextPiece();
+    if (!queuedNext) return null;
+    return createPieceByType(queuedNext.type);
   }, [popNextPiece]);
 
   const lockCurrentPiece = useCallback(() => {
@@ -625,12 +655,13 @@ export default function GameBoard({
 
     const next = drawNextPiece();
     if (!next) return;
-    holdUsedRef.current = false;
     if (collides(clearedBoard, next, 0, 0)) {
       failRun(nextTotalLines, nextPiecesPlaced);
       return;
     }
 
+    canHoldRef.current = true;
+    setCanHold(true);
     pieceRef.current = next;
     setPiece(next);
   }, [
@@ -747,14 +778,23 @@ export default function GameBoard({
   const holdActivePiece = useCallback(() => {
     const currentPiece = pieceRef.current;
     const currentBoard = boardRef.current;
-    if (!currentPiece || holdUsedRef.current) return;
+    if (!currentPiece || !canHoldRef.current) return;
+
+    canHoldRef.current = false;
+    setCanHold(false);
 
     clearLockTimer();
 
-    if (!holdType) {
+    if (!holdTypeRef.current) {
       setHoldType(currentPiece.type);
-      const next = popNextPiece();
-      if (!next) return;
+      holdTypeRef.current = currentPiece.type;
+
+      const next = drawNextPiece();
+      if (!next) {
+        canHoldRef.current = true;
+        setCanHold(true);
+        return;
+      }
       if (collides(currentBoard, next, 0, 0)) {
         failRun(linesRef.current, piecesPlacedRef.current);
         return;
@@ -762,22 +802,25 @@ export default function GameBoard({
 
       pieceRef.current = next;
       setPiece(next);
-      holdUsedRef.current = true;
       return;
     }
 
-    const swapped = createPieceByType(holdType);
-    if (!swapped) return;
+    const swapped = createPieceByType(holdTypeRef.current);
+    if (!swapped) {
+      canHoldRef.current = true;
+      setCanHold(true);
+      return;
+    }
     if (collides(currentBoard, swapped, 0, 0)) {
       failRun(linesRef.current, piecesPlacedRef.current);
       return;
     }
 
     setHoldType(currentPiece.type);
+    holdTypeRef.current = currentPiece.type;
     pieceRef.current = swapped;
     setPiece(swapped);
-    holdUsedRef.current = true;
-  }, [clearLockTimer, failRun, holdType, popNextPiece]);
+  }, [clearLockTimer, drawNextPiece, failRun]);
 
   useEffect(() => {
     if (gamePhase !== "playing") {
@@ -813,7 +856,6 @@ export default function GameBoard({
 
     if (!canPlay) {
       queued.hardDrop = false;
-      queued.hold = false;
       gravityAccumulatorRef.current = 0;
       commitKeyFrame();
       return;
@@ -827,8 +869,8 @@ export default function GameBoard({
       hardDropActivePiece();
     }
 
-    if (queued.hold) {
-      queued.hold = false;
+    const holdPressed = currentKeyState.hold && !prevKeyState.hold;
+    if (holdPressed) {
       holdActivePiece();
     }
 
@@ -887,6 +929,37 @@ export default function GameBoard({
       rotateActivePiece("180");
     }
 
+    if (currentKeyState.softDrop && useInfiniteSoftDrop) {
+      const currentPiece = pieceRef.current;
+      const currentBoard = boardRef.current;
+
+      if (!currentPiece) {
+        gravityAccumulatorRef.current = 0;
+        commitKeyFrame();
+        return;
+      }
+
+      if (collides(currentBoard, currentPiece, 0, 1)) {
+        scheduleLockTimer();
+        gravityAccumulatorRef.current = 0;
+        commitKeyFrame();
+        return;
+      }
+
+      clearLockTimer();
+      let dropped = currentPiece;
+      while (!collides(currentBoard, dropped, 0, 1)) {
+        dropped = { ...dropped, y: dropped.y + 1 };
+      }
+
+      pieceRef.current = dropped;
+      setPiece(dropped);
+      scheduleLockTimer();
+      gravityAccumulatorRef.current = 0;
+      commitKeyFrame();
+      return;
+    }
+
     const gravityStepMs = currentKeyState.softDrop
       ? GRAVITY_FAST
       : gravityForLevel(levelRef.current);
@@ -923,6 +996,7 @@ export default function GameBoard({
     pollRepeatControl,
     rotateActivePiece,
     scheduleLockTimer,
+    useInfiniteSoftDrop,
   ]);
 
   useEffect(() => {
@@ -963,15 +1037,7 @@ export default function GameBoard({
       e.preventDefault();
       if (e.repeat) return;
 
-      if (gamePhase === "playing") {
-        clearLockTimer();
-        clearInputState();
-        setGamePhase("paused");
-      } else if (gamePhase === "paused") {
-        clearInputState();
-        setGamePhase("playing");
-      }
-
+      togglePause();
       return;
     }
 
@@ -981,11 +1047,10 @@ export default function GameBoard({
     if (e.repeat) return;
     syncControlForCode(e.code, true, performance.now());
   }, [
-    clearInputState,
-    clearLockTimer,
     gamePhase,
     reset,
     syncControlForCode,
+    togglePause,
   ]);
 
   const onKeyUp = useCallback((e) => {
@@ -1015,6 +1080,9 @@ export default function GameBoard({
   const finalPieces = runSummary?.totalPiecesPlaced ?? piecesPlaced;
   const finalLines = runSummary?.linesCleared ?? lines;
   const finalPps = runSummary?.pps ?? calculatePPS(finalPieces, finalTime);
+  const nextPreviewQueue = gamePhase === "countdown" && piece
+    ? [piece.type, ...nextQueue].slice(0, NEXT_PREVIEW_COUNT)
+    : nextQueue;
   const overlayButtonStyle = {
     background: "#20232a",
     color: "#fff",
@@ -1104,6 +1172,46 @@ export default function GameBoard({
             Reset
           </button>
         )}
+
+        <button
+          onClick={togglePause}
+          disabled={gamePhase !== "playing" && gamePhase !== "paused"}
+          style={{
+            padding: "7px 12px",
+            background:
+              gamePhase === "playing" || gamePhase === "paused"
+                ? "#20232a"
+                : "#161820",
+            color: "#fff",
+            border: "1px solid #2f2f36",
+            borderRadius: 6,
+            cursor:
+              gamePhase === "playing" || gamePhase === "paused"
+                ? "pointer"
+                : "not-allowed",
+            width: "100%",
+            opacity: gamePhase === "playing" || gamePhase === "paused" ? 1 : 0.6,
+          }}
+        >
+          {gamePhase === "paused" ? "Resume" : "Pause"}
+        </button>
+
+        <button
+          onClick={() => setUseInfiniteSoftDrop((prev) => !prev)}
+          style={{
+            padding: "7px 12px",
+            background: useInfiniteSoftDrop ? "#1f4f6b" : "#20232a",
+            color: "#fff",
+            border: "1px solid #2f2f36",
+            borderRadius: 6,
+            cursor: "pointer",
+            width: "100%",
+            fontSize: 11,
+          }}
+          title="Toggle soft drop speed"
+        >
+          Soft Drop: {useInfiniteSoftDrop ? "Infinite" : "Default"}
+        </button>
       </div>
 
       <div
@@ -1307,7 +1415,7 @@ export default function GameBoard({
               placeItems: "center",
             }}
           >
-            {renderMiniPiece(nextQueue[index] ?? null)}
+            {renderMiniPiece(nextPreviewQueue[index] ?? null)}
           </div>
         ))}
       </div>
