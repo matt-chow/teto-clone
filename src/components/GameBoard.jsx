@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { createEmptyBoard, cloneBoard, clearLines } from "../game/board";
 import { createBagRNG, createPieceByType } from "../game/pieces";
 import { formatCells, tryRotatePieceSRS } from "../game/rotation";
-import { formatDuration } from "../game/sprint";
+import { calculatePPS, formatDuration } from "../game/sprint";
 import {
   COLS,
   ROWS,
@@ -88,6 +88,19 @@ function getPieceCellSet(piece) {
   return cells;
 }
 
+function hasPieceCellsAboveTop(piece) {
+  const { shape, y } = piece;
+
+  for (let py = 0; py < shape.length; py++) {
+    for (let px = 0; px < shape[py].length; px++) {
+      if (!shape[py][px]) continue;
+      if (y + py < 0) return true;
+    }
+  }
+
+  return false;
+}
+
 function hexToRgba(hex, alpha) {
   const clean = hex.replace("#", "");
   const normalized = clean.length === 3
@@ -110,6 +123,8 @@ function hexToRgba(hex, alpha) {
 
 // TETR.IO default lock delay is 30 frames at 60 Hz (~500 ms).
 const LOCK_DELAY_MS = 500;
+const COUNTDOWN_STEPS = ["3", "2", "1", "GO"];
+const COUNTDOWN_STEP_MS = 300;
 const NEXT_PREVIEW_COUNT = 5;
 const PREVIEW_BOX = 4;
 const PREVIEW_CELL = 12;
@@ -128,7 +143,7 @@ const CONTROL_KEY_CODES = {
   rotate180: ["KeyA"],
   hardDrop: ["Space"],
   hold: ["KeyC"],
-  pause: ["KeyP"],
+  pause: ["KeyP", "Escape"],
   reset: ["KeyR"],
 };
 
@@ -145,7 +160,7 @@ const CODE_TO_CONTROLS = Object.entries(CONTROL_KEY_CODES).reduce(
 
 const REPEATABLE_CONTROLS = ["left", "right"];
 
-const ONE_SHOT_CONTROLS = ["hardDrop", "hold", "pause", "reset"];
+const ONE_SHOT_CONTROLS = ["hardDrop", "hold"];
 
 const REPEATABLE_CONTROL_SET = new Set(REPEATABLE_CONTROLS);
 const ONE_SHOT_CONTROL_SET = new Set(ONE_SHOT_CONTROLS);
@@ -176,8 +191,6 @@ function createInitialQueuedActions() {
   return {
     hardDrop: false,
     hold: false,
-    pause: false,
-    reset: false,
   };
 }
 
@@ -250,12 +263,11 @@ function renderMiniPiece(type) {
 export default function GameBoard({
   gameMode,
   sprintTargetLines = 40,
-  elapsedTimeMs = 0,
-  onFirstGameplayInput,
-  onSprintProgress,
-  onSprintComplete,
   allowManualReset = true,
+  onBackToMenu,
 }) {
+  const [gamePhase, setGamePhase] = useState("idle");
+  const [countdownLabel, setCountdownLabel] = useState(null);
   const [board, setBoard] = useState(() => createEmptyBoard());
   const initDoneRef = useRef(false);
   const debugRotation = useRef(
@@ -268,8 +280,8 @@ export default function GameBoard({
   const [holdType, setHoldType] = useState(null);
   const [nextQueue, setNextQueue] = useState([]);
 
-  const [gameOver, setGameOver] = useState(false);
-  const [paused, setPaused] = useState(false);
+  const [elapsedTimeMs, setElapsedTimeMs] = useState(0);
+  const [runSummary, setRunSummary] = useState(null);
 
   const [score, setScore] = useState(0);
   const [lines, setLines] = useState(0);
@@ -282,10 +294,12 @@ export default function GameBoard({
   const levelRef = useRef(level);
   const linesRef = useRef(lines);
   const piecesPlacedRef = useRef(0);
-  const hasNotifiedFirstInputRef = useRef(false);
   const gravityAccumulatorRef = useRef(0);
   const lastFrameTimeRef = useRef(null);
+  const frameIdRef = useRef(null);
   const lockTimerRef = useRef(null);
+  const countdownTimersRef = useRef([]);
+  const elapsedTimeRef = useRef(0);
   const previewQueueRef = useRef([]);
   const holdUsedRef = useRef(false);
   const pressedKeysRef = useRef(new Set());
@@ -312,16 +326,18 @@ export default function GameBoard({
 
   const isSprintMode = gameMode === "sprint";
 
-  const markFirstGameplayInput = useCallback(() => {
-    if (hasNotifiedFirstInputRef.current) return;
-    hasNotifiedFirstInputRef.current = true;
-    onFirstGameplayInput?.();
-  }, [onFirstGameplayInput]);
-
   const clearLockTimer = useCallback(() => {
     if (lockTimerRef.current === null) return;
     clearTimeout(lockTimerRef.current);
     lockTimerRef.current = null;
+  }, []);
+
+  const clearCountdownTimers = useCallback(() => {
+    if (!countdownTimersRef.current.length) return;
+    countdownTimersRef.current.forEach((timerId) => {
+      clearTimeout(timerId);
+    });
+    countdownTimersRef.current = [];
   }, []);
 
   const syncNextQueueState = useCallback(() => {
@@ -364,35 +380,24 @@ export default function GameBoard({
     levelRef.current = 0;
     linesRef.current = 0;
     piecesPlacedRef.current = 0;
-    hasNotifiedFirstInputRef.current = false;
     gravityAccumulatorRef.current = 0;
     lastFrameTimeRef.current = null;
+    elapsedTimeRef.current = 0;
     holdUsedRef.current = false;
 
     setBoard(emptyBoard);
     setPiece(firstPiece);
     setHoldType(null);
     syncNextQueueState();
-    setGameOver(false);
-    setPaused(false);
+    setElapsedTimeMs(0);
+    setRunSummary(null);
     setScore(0);
     setLines(0);
     setLevel(0);
     setPiecesPlaced(0);
-
-    if (isSprintMode) {
-      onSprintProgress?.({
-        linesCleared: 0,
-        totalPiecesPlaced: 0,
-        targetLines: sprintTargetLines,
-      });
-    }
   }, [
     clearLockTimer,
     fillPreviewQueue,
-    isSprintMode,
-    onSprintProgress,
-    sprintTargetLines,
     syncNextQueueState,
   ]);
 
@@ -472,11 +477,79 @@ export default function GameBoard({
     return false;
   }, []);
 
-  const reset = useCallback(() => {
+  const endRun = useCallback((phase, totalLines, totalPiecesPlaced) => {
+    const finalTimeMs = elapsedTimeRef.current;
+    clearLockTimer();
+
+    setRunSummary({
+      phase,
+      linesCleared: totalLines,
+      totalPiecesPlaced,
+      finalTimeMs,
+      pps: calculatePPS(totalPiecesPlaced, finalTimeMs),
+    });
+    setGamePhase(phase);
+  }, [clearLockTimer]);
+
+  const finishRun = useCallback((totalLines, totalPiecesPlaced) => {
+    endRun("finished", totalLines, totalPiecesPlaced);
+  }, [endRun]);
+
+  const failRun = useCallback((totalLines, totalPiecesPlaced) => {
+    endRun("failed", totalLines, totalPiecesPlaced);
+  }, [endRun]);
+
+  const startCountdown = useCallback(() => {
+    clearLockTimer();
     clearInputState();
-    startNewGame();
-    rootRef.current?.focus();
-  }, [clearInputState, startNewGame]);
+    clearCountdownTimers();
+
+    setRunSummary(null);
+    setGamePhase("countdown");
+    setCountdownLabel(COUNTDOWN_STEPS[0]);
+
+    COUNTDOWN_STEPS.forEach((label, index) => {
+      const timeoutId = setTimeout(() => {
+        setCountdownLabel(label);
+      }, index * COUNTDOWN_STEP_MS);
+
+      countdownTimersRef.current.push(timeoutId);
+    });
+
+    const playTimeoutId = setTimeout(() => {
+      startNewGame();
+      setGamePhase("playing");
+      setCountdownLabel(null);
+      rootRef.current?.focus();
+    }, COUNTDOWN_STEPS.length * COUNTDOWN_STEP_MS);
+
+    countdownTimersRef.current.push(playTimeoutId);
+  }, [clearInputState, clearCountdownTimers, clearLockTimer, startNewGame]);
+
+  const reset = useCallback(() => {
+    startCountdown();
+  }, [startCountdown]);
+
+  const backToMenu = useCallback(() => {
+    console.log("[GameBoard] Main Menu click handled");
+    clearLockTimer();
+    clearInputState();
+    clearCountdownTimers();
+    if (frameIdRef.current !== null) {
+      cancelAnimationFrame(frameIdRef.current);
+      frameIdRef.current = null;
+    }
+    setCountdownLabel(null);
+    setRunSummary(null);
+    setGamePhase("idle");
+    console.log("[GameBoard] Triggering onBackToMenu callback");
+    onBackToMenu?.();
+  }, [clearCountdownTimers, clearInputState, clearLockTimer, onBackToMenu]);
+
+  const handleMainMenuClick = useCallback((e) => {
+    e.stopPropagation();
+    backToMenu();
+  }, [backToMenu]);
 
   useEffect(() => {
     rootRef.current?.focus();
@@ -485,8 +558,8 @@ export default function GameBoard({
   useEffect(() => {
     if (initDoneRef.current) return;
     initDoneRef.current = true;
-    startNewGame();
-  }, [startNewGame]);
+    startCountdown();
+  }, [startCountdown]);
 
   const drawNextPiece = useCallback(() => {
     return popNextPiece();
@@ -500,6 +573,8 @@ export default function GameBoard({
     if (!collides(currentBoard, currentPiece, 0, 1)) return;
 
     clearLockTimer();
+
+    const toppedOut = hasPieceCellsAboveTop(currentPiece);
 
     const locked = mergePiece(currentBoard, currentPiece);
     const { board: clearedBoard, linesCleared } = clearLines
@@ -528,28 +603,21 @@ export default function GameBoard({
       }
     }
 
-    if (isSprintMode) {
-      onSprintProgress?.({
-        linesCleared: nextTotalLines,
-        totalPiecesPlaced: nextPiecesPlaced,
-        targetLines: sprintTargetLines,
-      });
+    if (toppedOut) {
+      failRun(nextTotalLines, nextPiecesPlaced);
+      return;
+    }
 
-      if (nextTotalLines >= sprintTargetLines) {
-        setGameOver(true);
-        onSprintComplete?.({
-          linesCleared: nextTotalLines,
-          totalPiecesPlaced: nextPiecesPlaced,
-        });
-        return;
-      }
+    if (isSprintMode && nextTotalLines >= sprintTargetLines) {
+      finishRun(nextTotalLines, nextPiecesPlaced);
+      return;
     }
 
     const next = drawNextPiece();
     if (!next) return;
     holdUsedRef.current = false;
     if (collides(clearedBoard, next, 0, 0)) {
-      setGameOver(true);
+      failRun(nextTotalLines, nextPiecesPlaced);
       return;
     }
 
@@ -558,9 +626,9 @@ export default function GameBoard({
   }, [
     clearLockTimer,
     drawNextPiece,
+    failRun,
+    finishRun,
     isSprintMode,
-    onSprintComplete,
-    onSprintProgress,
     sprintTargetLines,
   ]);
 
@@ -678,7 +746,7 @@ export default function GameBoard({
       const next = popNextPiece();
       if (!next) return;
       if (collides(currentBoard, next, 0, 0)) {
-        setGameOver(true);
+        failRun(linesRef.current, piecesPlacedRef.current);
         return;
       }
 
@@ -691,7 +759,7 @@ export default function GameBoard({
     const swapped = createPieceByType(holdType);
     if (!swapped) return;
     if (collides(currentBoard, swapped, 0, 0)) {
-      setGameOver(true);
+      failRun(linesRef.current, piecesPlacedRef.current);
       return;
     }
 
@@ -699,19 +767,20 @@ export default function GameBoard({
     pieceRef.current = swapped;
     setPiece(swapped);
     holdUsedRef.current = true;
-  }, [clearLockTimer, holdType, popNextPiece]);
+  }, [clearLockTimer, failRun, holdType, popNextPiece]);
 
   useEffect(() => {
-    if (paused || gameOver) {
+    if (gamePhase !== "playing") {
       clearLockTimer();
     }
-  }, [paused, gameOver, clearLockTimer]);
+  }, [gamePhase, clearLockTimer]);
 
   useEffect(() => {
     return () => {
       clearLockTimer();
+      clearCountdownTimers();
     };
-  }, [clearLockTimer]);
+  }, [clearCountdownTimers, clearLockTimer]);
 
   const processInputFrame = useCallback((now) => {
     const currentKeyState = keyStateRef.current;
@@ -730,26 +799,7 @@ export default function GameBoard({
     lastFrameTimeRef.current = now;
 
     const queued = queuedActionsRef.current;
-
-    if (queued.pause) {
-      queued.pause = false;
-      setPaused((prev) => !prev);
-      gravityAccumulatorRef.current = 0;
-      commitKeyFrame();
-      return;
-    }
-
-    if (queued.reset) {
-      queued.reset = false;
-      if (allowManualReset) {
-        reset();
-      }
-      gravityAccumulatorRef.current = 0;
-      commitKeyFrame();
-      return;
-    }
-
-    const canPlay = !paused && !gameOver;
+    const canPlay = gamePhase === "playing";
 
     if (!canPlay) {
       queued.hardDrop = false;
@@ -759,15 +809,16 @@ export default function GameBoard({
       return;
     }
 
+    elapsedTimeRef.current += deltaMs;
+    setElapsedTimeMs(elapsedTimeRef.current);
+
     if (queued.hardDrop) {
       queued.hardDrop = false;
-      markFirstGameplayInput();
       hardDropActivePiece();
     }
 
     if (queued.hold) {
       queued.hold = false;
-      markFirstGameplayInput();
       holdActivePiece();
     }
 
@@ -797,24 +848,17 @@ export default function GameBoard({
         );
 
         if (shouldMovePrimary) {
-          markFirstGameplayInput();
           moveActivePiece(primary === "left" ? -1 : 1, 0);
         }
       } else if (leftPressed) {
         if (pollRepeatControl("left", now, INPUT_TIMING.DAS_MS, INPUT_TIMING.ARR_MS)) {
-          markFirstGameplayInput();
           moveActivePiece(-1, 0);
         }
       } else if (
         pollRepeatControl("right", now, INPUT_TIMING.DAS_MS, INPUT_TIMING.ARR_MS)
       ) {
-        markFirstGameplayInput();
         moveActivePiece(1, 0);
       }
-    }
-
-    if (currentKeyState.softDrop && !prevKeyState.softDrop) {
-      markFirstGameplayInput();
     }
 
     const rotateCWPressed = currentKeyState.rotateCW && !prevKeyState.rotateCW;
@@ -822,17 +866,14 @@ export default function GameBoard({
     const rotate180Pressed = currentKeyState.rotate180 && !prevKeyState.rotate180;
 
     if (rotateCWPressed) {
-      markFirstGameplayInput();
       rotateActivePiece("cw");
     }
 
     if (rotateCCWPressed) {
-      markFirstGameplayInput();
       rotateActivePiece("ccw");
     }
 
     if (rotate180Pressed) {
-      markFirstGameplayInput();
       rotateActivePiece("180");
     }
 
@@ -865,32 +906,31 @@ export default function GameBoard({
     commitKeyFrame();
   }, [
     clearLockTimer,
-    gameOver,
+    gamePhase,
     hardDropActivePiece,
     holdActivePiece,
     moveActivePiece,
-    paused,
     pollRepeatControl,
-    reset,
     rotateActivePiece,
     scheduleLockTimer,
-    allowManualReset,
-    markFirstGameplayInput,
   ]);
 
   useEffect(() => {
-    let frameId = null;
+    if (gamePhase !== "playing") return undefined;
 
     const step = (now) => {
       processInputFrame(now);
-      frameId = requestAnimationFrame(step);
+      frameIdRef.current = requestAnimationFrame(step);
     };
 
-    frameId = requestAnimationFrame(step);
+    frameIdRef.current = requestAnimationFrame(step);
     return () => {
-      if (frameId !== null) cancelAnimationFrame(frameId);
+      if (frameIdRef.current !== null) {
+        cancelAnimationFrame(frameIdRef.current);
+        frameIdRef.current = null;
+      }
     };
-  }, [processInputFrame]);
+  }, [gamePhase, processInputFrame]);
 
   useEffect(() => {
     return () => {
@@ -899,27 +939,81 @@ export default function GameBoard({
   }, [clearInputState]);
 
   const onKeyDown = useCallback((e) => {
+    const isPauseToggle = e.code === "KeyP" || e.code === "Escape";
+    const isReset = e.code === "KeyR";
+
+    if (isReset) {
+      e.preventDefault();
+      if (e.repeat) return;
+      reset();
+      return;
+    }
+
+    if (isPauseToggle) {
+      e.preventDefault();
+      if (e.repeat) return;
+
+      if (gamePhase === "playing") {
+        clearLockTimer();
+        clearInputState();
+        setGamePhase("paused");
+      } else if (gamePhase === "paused") {
+        clearInputState();
+        setGamePhase("playing");
+      }
+
+      return;
+    }
+
+    if (gamePhase !== "playing") return;
     if (!CODE_TO_CONTROLS[e.code]) return;
     e.preventDefault();
     if (e.repeat) return;
     syncControlForCode(e.code, true, performance.now());
-  }, [syncControlForCode]);
+  }, [
+    clearInputState,
+    clearLockTimer,
+    gamePhase,
+    reset,
+    syncControlForCode,
+  ]);
 
   const onKeyUp = useCallback((e) => {
+    if (gamePhase !== "playing") return;
     if (!CODE_TO_CONTROLS[e.code]) return;
     e.preventDefault();
     syncControlForCode(e.code, false, performance.now());
-  }, [syncControlForCode]);
+  }, [gamePhase, syncControlForCode]);
 
   const onInputBlur = useCallback(() => {
     clearInputState();
   }, [clearInputState]);
 
-  const view = piece ? cellsWithCurrentPiece(board, piece) : board;
-  const ghostPiece = piece ? getGhostPiece(board, piece) : null;
+  const renderPiece = gamePhase === "playing" || gamePhase === "paused"
+    ? piece
+    : null;
+  const view = renderPiece ? cellsWithCurrentPiece(board, renderPiece) : board;
+  const ghostPiece = renderPiece ? getGhostPiece(board, renderPiece) : null;
   const ghostCells = ghostPiece ? getPieceCellSet(ghostPiece) : new Set();
-  const ghostFill = piece ? hexToRgba(COLORS[piece.id], 0.18) : "transparent";
-  const ghostStroke = piece ? hexToRgba(COLORS[piece.id], 0.65) : "transparent";
+  const ghostFill = renderPiece ? hexToRgba(COLORS[renderPiece.id], 0.18) : "transparent";
+  const ghostStroke = renderPiece ? hexToRgba(COLORS[renderPiece.id], 0.65) : "transparent";
+  const showPausedOverlay = gamePhase === "paused";
+  const showCountdownOverlay = gamePhase === "countdown";
+  const showFinishedOverlay = gamePhase === "finished";
+  const showFailedOverlay = gamePhase === "failed";
+  const finalTime = runSummary?.finalTimeMs ?? elapsedTimeMs;
+  const finalPieces = runSummary?.totalPiecesPlaced ?? piecesPlaced;
+  const finalLines = runSummary?.linesCleared ?? lines;
+  const finalPps = runSummary?.pps ?? calculatePPS(finalPieces, finalTime);
+  const overlayButtonStyle = {
+    background: "#20232a",
+    color: "#fff",
+    border: "1px solid #2f2f36",
+    borderRadius: 6,
+    padding: "8px 14px",
+    cursor: "pointer",
+    fontWeight: 600,
+  };
 
   return (
     <div
@@ -980,8 +1074,8 @@ export default function GameBoard({
           <div>Rotate CCW: Z</div>
           <div>Rotate 180: A</div>
           <div>Hold: C</div>
-          <div>Pause: P</div>
-          {allowManualReset && <div>Reset: R</div>}
+          <div>Pause: P / Esc</div>
+          <div>Reset: R</div>
         </div>
 
         {allowManualReset && (
@@ -1066,22 +1160,113 @@ export default function GameBoard({
             }),
           )}
 
-          {(paused || gameOver) && (
+          {showPausedOverlay && (
+            <div
+              onClick={(e) => e.stopPropagation()}
+              style={{
+                position: "absolute",
+                inset: 0,
+                background: "rgba(0,0,0,0.62)",
+                display: "grid",
+                placeItems: "center",
+                color: "#fff",
+                textAlign: "center",
+                padding: 12,
+                zIndex: 20,
+                pointerEvents: "auto",
+              }}
+            >
+              <div style={{ display: "grid", gap: 10 }}>
+                <div style={{ fontWeight: 800, fontSize: 24 }}>Paused</div>
+                <div style={{ color: "#d3d6e4" }}>Press P or Esc to resume</div>
+                <div>
+                  <button onClick={handleMainMenuClick} style={overlayButtonStyle}>
+                    Main Menu
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {showCountdownOverlay && (
             <div
               style={{
                 position: "absolute",
                 inset: 0,
-                background: "rgba(0,0,0,0.45)",
+                background: "rgba(0,0,0,0.55)",
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
                 color: "#fff",
-                fontWeight: 700,
-                fontSize: 22,
+                fontWeight: 800,
+                fontSize: 34,
                 letterSpacing: 1,
               }}
             >
-              {gameOver ? "GAME OVER" : "PAUSED"}
+              {countdownLabel}
+            </div>
+          )}
+
+          {showFinishedOverlay && (
+            <div
+              onClick={(e) => e.stopPropagation()}
+              style={{
+                position: "absolute",
+                inset: 0,
+                background: "rgba(0,0,0,0.68)",
+                display: "grid",
+                placeItems: "center",
+                color: "#fff",
+                textAlign: "center",
+                padding: 12,
+                zIndex: 20,
+                pointerEvents: "auto",
+              }}
+            >
+              <div style={{ display: "grid", gap: 8 }}>
+                <div style={{ fontWeight: 800, fontSize: 24 }}>Complete</div>
+                <div>Time: {formatDuration(finalTime)}</div>
+                <div>PPS: {finalPps.toFixed(2)}</div>
+                <div>Pieces placed: {finalPieces}</div>
+                <div style={{ color: "#d3d6e4", marginTop: 4 }}>Press R to retry</div>
+                <div>
+                  <button onClick={handleMainMenuClick} style={overlayButtonStyle}>
+                    Main Menu
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {showFailedOverlay && (
+            <div
+              onClick={(e) => e.stopPropagation()}
+              style={{
+                position: "absolute",
+                inset: 0,
+                background: "rgba(0,0,0,0.72)",
+                display: "grid",
+                placeItems: "center",
+                color: "#fff",
+                textAlign: "center",
+                padding: 12,
+                zIndex: 20,
+                pointerEvents: "auto",
+              }}
+            >
+              <div style={{ display: "grid", gap: 8 }}>
+                <div style={{ fontWeight: 800, fontSize: 24 }}>Game Over</div>
+                <div>Time: {formatDuration(finalTime)}</div>
+                <div>PPS: {finalPps.toFixed(2)}</div>
+                <div>Pieces placed: {finalPieces}</div>
+                <div>Lines cleared: {finalLines}</div>
+                <div style={{ color: "#d3d6e4", marginTop: 4 }}>Press R to retry</div>
+                <div>
+                  <button onClick={handleMainMenuClick} style={overlayButtonStyle}>
+                    Main Menu
+                  </button>
+                </div>
+              </div>
             </div>
           )}
         </div>
